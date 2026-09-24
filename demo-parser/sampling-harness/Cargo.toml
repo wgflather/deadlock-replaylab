@@ -1,0 +1,17 @@
+[package]
+name = "sampling-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Measures what a replay's position stream costs, and loses, at each sample rate."
+publish = false
+
+[dependencies]
+# The same pinned haste the wasm parser uses: the two must agree about what a replay says.
+haste = { git = "https://github.com/blukai/haste.git", rev = "e5491c37fb70ea7cc762423406a450dd956c8050", features = ["deadlock"] }
+anyhow = "1.0"
+flate2 = "1"
+brotli = "7"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

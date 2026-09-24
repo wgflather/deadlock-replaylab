@@ -1,0 +1,292 @@
+@import 'tailwindcss';
+
+/*
+ * The theme. Two colour systems, kept apart on purpose:
+ *
+ *  - The application palette (`--ui-*`) is everything around the game: page, panels,
+ *    borders, text, tabs, buttons, and what is selected or focused. It is quiet and
+ *    warm -- charcoal and cream, after Deadlock's own app icon -- and has exactly one
+ *    accent, the cream, spent only on selection, focus and the primary control.
+ *
+ *  - The data palette (`--data-*`) is the game's own meaning: the two teams, health,
+ *    damage, death, item categories, shots. These keep their meaning whatever the
+ *    application theme does, so no UI control ever borrows one, and no data point is
+ *    ever drawn in the UI accent. Lane and structure colours are the data palette too;
+ *    they live in src/map/palette.ts, which follows the game's minimap source.
+ *
+ * Components reach both through the Tailwind names mapped below (`bg-ui-surface`,
+ * `text-ui-muted`, `text-data-amber` ...) or var() where a utility cannot.
+ */
+:root {
+  /* --- Application --- */
+  --ui-bg: #151412;
+  /* A panel: one step up from the page, enough to read as a region, not a card. */
+  --ui-surface: #1c1b18;
+  /* Hover, the selected row, a popover: one step above a panel. */
+  --ui-raised: #25231f;
+  /* Below the page: the map's screen, where the data is the brightest thing. */
+  --ui-inset: #11100e;
+  --ui-line: #2e2b27;
+  /* Dividers that separate rather than outline, and control edges. */
+  --ui-line-strong: #423e37;
+  --ui-fg: #ece6da;
+  /* Secondary text. About 7:1 on the panels: muted, never faint to the point of work. */
+  --ui-muted: #a8a092;
+  /* Separators and placeholder dashes only -- below AA for text. */
+  --ui-faint: #6e685e;
+  /* Cream: selection, focus, the primary control. Nothing decorative. */
+  --ui-accent: #e6d7b6;
+  --ui-accent-soft: rgba(230, 215, 182, 0.1);
+  --ui-on-accent: #151412;
+  --ui-radius: 6px;
+  /* A popover's lift off what it covers; the one shadow in the interface. */
+  --ui-shadow-pop: 0 6px 18px rgba(0, 0, 0, 0.35);
+
+  /* --- Game data --- */
+  /* The two factions: team names, team rules, and everything drawn for a team. */
+  --data-team-amber: #e2a54c;
+  --data-team-sapphire: #7393ea;
+  /* The neutral side: the Mid-Boss, neutral camps. */
+  --data-neutral: #8a9bb4;
+  /* Health, full to empty: a bar blends between these two. */
+  --data-health: #a3c95f;
+  --data-damage: #e06a5b;
+  /* Deaths in a table: the damage red with its saturation taken down, so a column of
+     them reads as a figure rather than an alarm. */
+  --data-death: color-mix(in srgb, var(--data-damage) 62%, var(--ui-muted));
+  /* The shop's three item categories, in the game's own hues. */
+  --data-item-weapon: #d9913b;
+  --data-item-vitality: #74b43f;
+  --data-item-spirit: #b07ae0;
+  /* A benchmark line on a chart -- the match average. Validated against both team
+     colours on the panel surface (normal-vision separation 21.6, colour-blind 20.8). */
+  --data-average: #f1ede6;
+  /* A neutral camp's marker: the game minimap's own teal for camps. (The Urn's markers
+     are the game's own images, so they carry their own colour.) */
+  --data-camp: #61e5cb;
+  /* A Sinner's Sacrifice: the same teal -- the game draws every neutral point of
+     interest in it. */
+  --data-sinner: var(--data-camp);
+  /* A crate: a light warm grey, a square, and small -- it must never be mistaken for a
+     team's creep, which is a dot in a team colour. */
+  --data-crate: #d6cfc2;
+  /* A Golden Statue: gold, brighter and yellower than the Amber team's orange, and a
+     statue's shape rather than a dot -- so the two are never read as one another. */
+  --data-statue: #f3d562;
+  /* Where souls came from, one colour per source. A categorical set in a fixed order
+     (the reference dark palette's eight slots), validated on the panel surface:
+     every adjacent pair of the stack clears colour-blind separation 8.4 and
+     normal-vision 19.3, and all clear 3:1 contrast. Chart-only: they carry no meaning
+     elsewhere. */
+  --data-income-kills: #3987e5;
+  --data-income-assists: #d95926;
+  --data-income-lane: #199e70;
+  --data-income-neutrals: #c98500;
+  --data-income-objectives: #d55181;
+  --data-income-breakables: #008300;
+  --data-income-team-bonus: #9085e9;
+  --data-income-other: #e66767;
+  /* A weapon firing: the two frames of the muzzle flash. */
+  --data-shot: #ffd166;
+  --data-shot-hot: #fff6d8;
+  /* Under a map marker, so it reads on any part of the map. Part of the marker. */
+  --data-marker-shadow: rgba(0, 0, 0, 0.6);
+}
+
+@theme {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', monospace;
+}
+
+/* The Tailwind names components use, pointed at the two palettes. */
+@theme inline {
+  --color-ui-bg: var(--ui-bg);
+  --color-ui-surface: var(--ui-surface);
+  --color-ui-raised: var(--ui-raised);
+  --color-ui-inset: var(--ui-inset);
+  --color-ui-line: var(--ui-line);
+  --color-ui-line-strong: var(--ui-line-strong);
+  --color-ui-fg: var(--ui-fg);
+  --color-ui-muted: var(--ui-muted);
+  --color-ui-faint: var(--ui-faint);
+  --color-ui-accent: var(--ui-accent);
+  --color-ui-accent-soft: var(--ui-accent-soft);
+  --color-ui-on-accent: var(--ui-on-accent);
+  --radius-ui: var(--ui-radius);
+
+  --color-data-amber: var(--data-team-amber);
+  --color-data-sapphire: var(--data-team-sapphire);
+  --color-data-neutral: var(--data-neutral);
+  --color-data-health: var(--data-health);
+  --color-data-damage: var(--data-damage);
+  --color-data-death: var(--data-death);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  /*
+   * The whole page is sized in rem, so this one value scales it evenly, the way browser
+   * zoom does. Wide screens get a little more, since 13px text reads small on a desktop
+   * monitor. Media queries measure rem against the browser default, so the breakpoints
+   * do not move with it.
+   */
+  @media (min-width: 80rem) {
+    html {
+      font-size: 112.5%;
+    }
+  }
+
+  /* Scrollbars in the application palette, so a scrolling panel does not grow a bright
+     system bar down its side. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--ui-line-strong);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ui-faint);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--ui-line-strong) transparent;
+    }
+  }
+
+  body {
+    background: var(--ui-bg);
+    color: var(--ui-fg);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    /* Every figure here is read against the one above or below it, so tabular figures
+       are the default everywhere rather than opted into per cell. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--ui-accent) 28%, transparent);
+  }
+
+  /* One focus treatment, applied once, for keyboard users only. */
+  :focus-visible {
+    outline: 2px solid var(--ui-accent);
+    outline-offset: 2px;
+  }
+
+  /* The native range and checkbox controls take the application accent. */
+  input[type='range'] {
+    accent-color: var(--ui-accent);
+  }
+}
+
+/*
+ * Surfaces. A panel is a region of the interface, not an object floating over it: a
+ * step of background and a 1px line, no shadow.
+ */
+@utility ui-panel {
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background-color: var(--ui-surface);
+}
+
+/* The map's screen: darker than the page, so the data on it is the brightest thing. */
+@utility ui-screen {
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background-color: var(--ui-inset);
+}
+
+/* Something that floats: a tooltip, a control group over the map. */
+@utility ui-pop {
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  background-color: var(--ui-raised);
+  box-shadow: var(--ui-shadow-pop);
+}
+
+/* The thin mount around a face -- every hero icon and portrait. */
+@utility frame {
+  border: 1px solid var(--ui-line);
+  background-color: var(--ui-inset);
+}
+
+/* A secondary button: an outline in the control line, filling on hover. */
+@utility ui-button {
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  color: var(--ui-muted);
+  transition:
+    color 120ms,
+    background-color 120ms;
+
+  &:hover {
+    color: var(--ui-fg);
+    background-color: var(--ui-raised);
+  }
+}
+
+/* A section's name inside a panel. */
+@utility section-title {
+  color: var(--ui-fg);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* A panel's header row: set off from its body by a single line. */
+@utility section-band {
+  border-bottom: 1px solid var(--ui-line);
+}
+
+/* A column header cell. Muted, sentence case, and ruled off by one line -- an inset
+   shadow, since a sticky cell's real border stays behind as the rows scroll. */
+@utility column-head {
+  color: var(--ui-muted);
+  background-color: var(--ui-surface);
+  box-shadow: inset 0 -1px 0 var(--ui-line);
+  font-weight: 500;
+}
+
+/* The small label over a figure. */
+@utility fact-label {
+  color: var(--ui-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The player panel's entrance: it slides in from the side it opens on, answering the
+   click that opened it. Applied only under motion-safe. */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}

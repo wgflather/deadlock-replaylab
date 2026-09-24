@@ -1,0 +1,53 @@
+# Builds the replay viewer in web/ and publishes it to GitHub Pages.
+#
+# Runs in the public viewer repo, not this one: publish-viewer.sh copies it there as
+# .github/workflows/pages.yml. Pages is not available for this private repo.
+#
+# The wasm parser is committed prebuilt in web/src/wasm, so this needs neither Rust nor
+# protoc -- rebuild it locally with `npm run wasm:build` when demo-parser/ changes.
+name: Deploy viewer to Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      # A project site is served under /<repo>/, so every asset URL needs that prefix.
+      - run: npx tsc -b && npx vite build --base=/${{ github.event.repository.name }}/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
