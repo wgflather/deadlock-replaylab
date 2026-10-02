@@ -139,6 +139,15 @@ export function killMarks(timeline: Timeline) {
   }))
 }
 
+/** Each Rift that was taken or spilled: when, and by which team (-1 when it spilled),
+ * for marking the scrubber. */
+export function riftMarks(timeline: Timeline) {
+  const { hz, rifts } = timeline.events
+  return rifts.end.flatMap((end, i) =>
+    end < 0 ? [] : [{ seconds: end / hz, team: rifts.team[i], outcome: rifts.outcome[i] }],
+  )
+}
+
 /** Seconds of screen time a burst of fire stays shown after its last shot, so a single
  * shot is a visible flash rather than one frame. */
 export const FIRE_TAIL = 0.25

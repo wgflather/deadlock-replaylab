@@ -2,11 +2,21 @@ import { useMemo } from 'react'
 import { breaksBy, urnsDeliveredBy } from '../demo/mapState'
 import type { Timeline } from '../demo/types'
 import { gameClock } from '../demo/usePlayback'
-import { CrateGlyph, SinnerGlyph, StatueGlyph, UrnGlyph } from './MapTimers'
+import type { PowerupKind } from '../demo/types'
+import {
+  CrateGlyph,
+  POWERUP_NAMES,
+  PowerupGlyph,
+  SinnerGlyph,
+  SnackGlyph,
+  StatueGlyph,
+  UrnGlyph,
+} from './MapTimers'
 
 /**
  * The inspector's Map tab: what a player took from the map up to the playhead -- crates
- * broken, Sinner's Sacrifices broken, and Urns delivered -- and a list of the latest.
+ * broken, Sinner's Sacrifices broken, Healing Snacks eaten, powerups taken and Urns
+ * delivered -- and a list of the latest.
  *
  * A Sinner's Sacrifice is credited to the last hero who hit it and an Urn to whoever
  * delivered it, both named by the replay. A crate is not: it goes to the nearest hero
@@ -17,19 +27,27 @@ import { CrateGlyph, SinnerGlyph, StatueGlyph, UrnGlyph } from './MapTimers'
 /** How many of the latest the list shows. */
 const RECENT = 12
 
-type Entry = { seconds: number; kind: 'crate' | 'sinner' | 'statue' | 'urn' }
+type Entry = {
+  seconds: number
+  kind: 'crate' | 'sinner' | 'statue' | 'snack' | 'powerup' | 'urn'
+  powerup?: PowerupKind
+}
 
 const LABELS: Record<Entry['kind'], string> = {
   crate: 'Crate broken',
   sinner: "Sinner's Sacrifice broken",
   statue: 'Golden statue broken',
+  snack: 'Healing snack eaten',
+  powerup: 'Powerup taken',
   urn: 'Urn delivered',
 }
 
-function Glyph({ kind }: { kind: Entry['kind'] }) {
+function Glyph({ kind, powerup }: { kind: Entry['kind']; powerup?: PowerupKind }) {
+  if (kind === 'powerup') return <PowerupGlyph kind={powerup ?? 'gun'} size={13} />
   if (kind === 'crate') return <CrateGlyph size={8} />
   if (kind === 'sinner') return <SinnerGlyph up size={12} />
   if (kind === 'statue') return <StatueGlyph size={12} />
+  if (kind === 'snack') return <SnackGlyph size={11} />
   return <UrnGlyph size={14} />
 }
 
@@ -60,8 +78,11 @@ export function MapActivityTab({
     ['crate', 'Crates'],
     ['sinner', "Sinner's Sacrifices"],
     ['statue', 'Golden statues'],
+    ['powerup', 'Powerups'],
     ['urn', 'Urns delivered'],
   ]
+  // Snacks only exist from the 2026-10 update on.
+  if (timeline.events.snacks.t.length) totals.splice(3, 0, ['snack', 'Healing snacks'])
 
   return (
     <div className="space-y-4 px-3 py-3">
@@ -92,9 +113,11 @@ export function MapActivityTab({
               >
                 <span className="text-ui-muted w-9 shrink-0">{gameClock(timeline, entry.seconds)}</span>
                 <span className="flex w-4 justify-center">
-                  <Glyph kind={entry.kind} />
+                  <Glyph kind={entry.kind} powerup={entry.powerup} />
                 </span>
-                <span className="text-ui-fg">{LABELS[entry.kind]}</span>
+                <span className="text-ui-fg">
+                  {entry.powerup ? `${POWERUP_NAMES[entry.powerup]} powerup taken` : LABELS[entry.kind]}
+                </span>
               </li>
             ))}
           </ol>
@@ -102,8 +125,8 @@ export function MapActivityTab({
       </div>
 
       <p className="text-ui-muted text-[0.6875rem]">
-        Crates and Golden Statues go to the nearest hero when they broke, so their counts are
-        a close estimate.
+        Crates, Golden Statues, Healing Snacks and powerups go to the nearest hero when they
+        broke or were taken, so their counts are a close estimate.
       </p>
     </div>
   )

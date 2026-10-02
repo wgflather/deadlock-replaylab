@@ -7,6 +7,7 @@ import {
   pairBaseGuardians,
   SAPPHIRE,
   spotsAt,
+  TEAM_SHORT_NAMES,
   type Timeline,
 } from '../demo/types'
 import {
@@ -25,9 +26,12 @@ import { heroIcon } from '../heroes'
 import {
   breakablesAt,
   breakableSpots,
+  powerupsAt,
   campHistories,
   campsAt,
   respawnDelays,
+  riftAt,
+  RIFT_RADIUS,
   urnAt,
 } from '../demo/mapState'
 import { EventMarks } from './EventLayer'
@@ -37,14 +41,20 @@ import {
   CrateGlyph,
   DropoffGlyph,
   MapTimers,
+  RiftGlyph,
   SinnerGlyph,
+  PowerupGlyph,
+  POWERUP_NAMES,
+  SnackGlyph,
   StatueGlyph,
   UrnGlyph,
 } from './MapTimers'
 import { ObjectiveIcon } from './ObjectiveIcon'
+import shopIcon from '../assets/map/shop.png'
 import { ZiplineLayer } from './ZiplineLayer'
 import { objectiveColours, type ViewAs } from '../map/palette'
-import { MINIMAP, worldToMap } from '../map'
+import { belowGroundFor, MAP_IMAGE_RADIUS, minimapFor, worldToMap } from '../map'
+import type { Below } from '../map/below'
 
 const MIN_ZOOM = 1
 /** The zoom from which "when zoomed" details -- crates, statues -- are drawn. */
@@ -54,6 +64,27 @@ const DETAIL_ZOOM = 2.5
  * enough to have room for it, or not at all. */
 type Detail = 'always' | 'zoomed' | 'hidden'
 
+/**
+ * Which map layer is drawn. The game's own minimap shows the streets, or -- while you
+ * are below them -- the area under the middle or the tunnels instead. "auto" does that
+ * for the hero being followed (or, failing that, inspected); the others hold one layer.
+ */
+type MapLayer = 'auto' | 'streets' | Below
+
+const MAP_LAYERS: [MapLayer, string][] = [
+  ['auto', 'Auto'],
+  ['streets', 'Streets'],
+  ['underground', 'Underground'],
+  ['tunnels', 'Tunnels'],
+]
+
+/** How much of the streets still shows under a below-ground layer: enough to say where
+ * on the map the passages run, not so much that it reads as the streets themselves. */
+const STREETS_UNDER = 0.18
+
+/** The neutral team: whose the underground shops are. */
+const NEUTRAL_TEAM = 4
+
 function shown(detail: Detail, zoom: number) {
   return detail === 'always' || (detail === 'zoomed' && zoom >= DETAIL_ZOOM)
 }
@@ -62,6 +93,15 @@ const IDLE_MS = 2500
 /** Pixels a press has to move before it is a drag rather than a click. */
 const DRAG_THRESHOLD = 4
 const MAX_ZOOM = 10
+/** A focused area fills this share of the frame, leaving room to see who arrives. */
+const FOCUS_FILL = 0.7
+/** The least radius a focus is framed at, in world units: a 1v1 fought on one spot
+ * still wants its lane around it, not a 10x close-up of two faces. */
+const FOCUS_MIN_RADIUS = 1200
+
+/** A request to frame part of the map: a centre and radius in world units. A new object
+ * is a new request, so the same fight clicked twice frames it again. */
+export type MapFocus = { x: number; y: number; radius: number }
 /** Marker width in pixels, held constant on screen however far the map is zoomed. */
 const MARKER = 30
 /** A view cone's reach from the player's centre, and its full width, in pixels and
@@ -157,6 +197,7 @@ export function MapView({
   onSelect,
   playing,
   transport,
+  focus = null,
 }: {
   timeline: Timeline
   at: number
@@ -169,6 +210,8 @@ export function MapView({
   playing: boolean
   /** The play controls, pinned along the bottom of the screen. */
   transport: ReactNode
+  /** Where to take the camera, as of the latest request; see `MapFocus`. */
+  focus?: MapFocus | null
 }) {
   const [zoom, setZoom] = useState(1)
   // Where the view sits when nobody is being followed.
@@ -176,6 +219,19 @@ export function MapView({
   // Who the camera was last told to follow. Only honoured while that player is still
   // the one selected: closing the inspector lets go of the camera too.
   const [followRequest, setFollowing] = useState<number | null>(null)
+  // A new focus request moves the camera once, during render as React advises for state
+  // that follows a prop -- after that, the view is the viewer's to pan and zoom again.
+  const [focused, setFocused] = useState(focus)
+  if (focus !== focused) {
+    setFocused(focus)
+    if (focus) {
+      const { left, top } = worldToMap(focus.x, focus.y)
+      const across = 2 * Math.max(focus.radius, FOCUS_MIN_RADIUS)
+      setZoom(clamp((2 * MAP_IMAGE_RADIUS * FOCUS_FILL) / across, MIN_ZOOM, MAX_ZOOM))
+      setPanned({ x: left, y: top })
+      setFollowing(null)
+    }
+  }
   const following = followRequest !== null && followRequest === selected ? followRequest : null
   const frameRef = useRef<HTMLDivElement>(null)
   // A press on the map: where the pointer last was, and whether it has moved far enough
@@ -193,7 +249,11 @@ export function MapView({
   // but zoomed into a fight they are exactly what is worth seeing.
   const [crateDetail, setCrateDetail] = useState<Detail>('zoomed')
   const [statueDetail, setStatueDetail] = useState<Detail>('zoomed')
+  // Healing Snacks are few enough -- 36 -- to show at any zoom.
+  const [snackDetail, setSnackDetail] = useState<Detail>('always')
   const [showTimers, setShowTimers] = useState(true)
+  const [showPowerups, setShowPowerups] = useState(true)
+  const [mapLayer, setMapLayer] = useState<MapLayer>('auto')
   // The frame's width in CSS pixels, which the lane stroke needs to hold its on-screen
   // width. The frame is square, so one number is enough.
   const [framePx, setFramePx] = useState(0)
@@ -217,6 +277,20 @@ export function MapView({
   }, [])
 
   const spots = spotsAt(timeline, at)
+  // The backgrounds this match's map has: rooms under the middle on both maps, tunnels
+  // only on the current one. A place without one is drawn on the streets.
+  const belowArt = belowGroundFor(timeline.build)
+  const hasTunnels = Object.keys(belowArt).length > 0
+  const watched = following ?? selected
+  const wanted: Below | null =
+    mapLayer === 'auto'
+      ? watched !== null
+        ? (spots[watched]?.below ?? null)
+        : null
+      : mapLayer === 'streets'
+        ? null
+        : mapLayer
+  const below: Below | null = wanted && belowArt[wanted] ? wanted : null
   const creeps = creepsAt(timeline, at)
   // One icon per Base Guardian pair, as the game's minimap draws them.
   const objectives = pairBaseGuardians(objectivesAt(timeline, at))
@@ -242,7 +316,13 @@ export function MapView({
   const statueSpots = useMemo(() => breakableSpots(timeline.events.statues), [timeline])
   const statues = breakablesAt(timeline.events.statues, statueSpots, hz, quant, at)
   const sinners = breakablesAt(timeline.events.sinners, sinnerSpots, hz, quant, at)
+  const showSnacks = shown(snackDetail, zoom)
+  const snackSpots = useMemo(() => breakableSpots(timeline.events.snacks), [timeline])
+  const snacks = breakablesAt(timeline.events.snacks, snackSpots, hz, quant, at)
+  const powerupSpots = useMemo(() => breakableSpots(timeline.events.powerups), [timeline])
+  const powerups = powerupsAt(timeline.events.powerups, powerupSpots, hz, quant, at)
   const urn = urnAt(timeline, at)
+  const rift = riftAt(timeline, at)
   // A flicker about eight times a second of screen time: the playhead divided by the
   // speed, since at 16x the match clock alone would strobe it faster than a screen can
   // draw. Paused, the playhead holds, and so does the flash.
@@ -379,11 +459,20 @@ export function MapView({
         style={{ transform: `scale(${zoom}) translate(${shiftX}%, ${shiftY}%)` }}
       >
         <img
-          src={MINIMAP}
+          src={minimapFor(timeline.build)}
           alt=""
           draggable={false}
-          className="absolute inset-0 h-full w-full select-none"
+          className="absolute inset-0 h-full w-full transition-opacity duration-150 select-none"
+          style={{ opacity: below ? STREETS_UNDER : 1 }}
         />
+        {below && (
+          <img
+            src={belowArt[below]}
+            alt=""
+            draggable={false}
+            className="absolute inset-0 h-full w-full select-none"
+          />
+        )}
 
         {/* Straight over the picture and under everything else, as in the game. */}
         <ZiplineLayer lanes={lanes} viewAs={viewAs} zoom={zoom} framePx={framePx} />
@@ -480,6 +569,75 @@ export function MapView({
             </div>
           )
         })}
+        {/*
+            The underground shops (neutral, one each side of the middle), as the game's
+            own minimap shop icon. Below the streets, so dimmed unless the underground
+            layer is up -- the same way a hero below ground is drawn.
+          */}
+        {(timeline.shops?.team ?? []).map((team, i) => {
+          if (team !== NEUTRAL_TEAM) return null
+          const { shops } = timeline
+          const { left, top } = worldToMap(shops.x[i] * quant, shops.y[i] * quant)
+          return (
+            <img
+              key={`shop-${i}`}
+              src={shopIcon}
+              alt=""
+              title="Underground shop"
+              draggable={false}
+              className="pointer-events-auto absolute select-none"
+              style={{
+                left: `${left * 100}%`,
+                top: `${top * 100}%`,
+                width: 18,
+                height: 18,
+                transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                filter: 'drop-shadow(0 0 2px black)',
+                opacity: below === 'underground' ? 1 : 0.55,
+              }}
+            />
+          )
+        })}
+        {/* Powerups there to take, each as the game's icon for its kind. */}
+        {showPowerups &&
+          powerups.map((powerup) => {
+            if (!powerup.kind) return null
+            const { left, top } = worldToMap(powerup.x, powerup.y)
+            return (
+              <div
+                key={`powerup-${powerup.id}`}
+                className="pointer-events-none absolute"
+                title={`${POWERUP_NAMES[powerup.kind]} powerup`}
+                style={{
+                  left: `${left * 100}%`,
+                  top: `${top * 100}%`,
+                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                }}
+              >
+                <PowerupGlyph kind={powerup.kind} size={16} />
+              </div>
+            )
+          })}
+        {/* Healing Snacks there to eat; an eaten one is not marked, like a crate. */}
+        {showSnacks &&
+          snacks.map((snack) => {
+            if (!snack.standing) return null
+            const { left, top } = worldToMap(snack.x, snack.y)
+            return (
+              <div
+                key={`snack-${snack.id}`}
+                className="pointer-events-none absolute"
+                title="Healing snack"
+                style={{
+                  left: `${left * 100}%`,
+                  top: `${top * 100}%`,
+                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                }}
+              >
+                <SnackGlyph size={10} />
+              </div>
+            )
+          })}
         {showCamps &&
           sinners.map((sinner) => {
             const { left, top } = worldToMap(sinner.x, sinner.y)
@@ -551,6 +709,41 @@ export function MapView({
               enemy={viewAs !== 'neutral' && timeline.players[urn.player]?.team !== viewAs}
               size={26}
             />
+          </div>
+        )}
+
+        {/* The Unstable Rift, from its warning until it is taken: faint and pulsing while
+            announced, then its 20 m capture circle at the map's own scale, brighter once
+            someone is standing in it. */}
+        {rift.state === 'open' && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute rounded-full border"
+            style={{
+              left: `${worldToMap(rift.x, rift.y).left * 100}%`,
+              top: `${worldToMap(rift.x, rift.y).top * 100}%`,
+              // A share of the map layer, which is square, so it zooms with the map.
+              width: `${(RIFT_RADIUS / MAP_IMAGE_RADIUS) * 100}%`,
+              aspectRatio: '1',
+              transform: 'translate(-50%, -50%)',
+              borderColor: 'var(--data-rift)',
+              background: `color-mix(in srgb, var(--data-rift) ${rift.contested ? 28 : 14}%, transparent)`,
+            }}
+          />
+        )}
+        {(rift.state === 'announced' || rift.state === 'open') && (
+          <div
+            className={`pointer-events-none absolute ${
+              rift.state === 'announced' ? 'motion-safe:animate-pulse' : ''
+            }`}
+            title="Unstable Rift"
+            style={{
+              left: `${worldToMap(rift.x, rift.y).left * 100}%`,
+              top: `${worldToMap(rift.x, rift.y).top * 100}%`,
+              transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+            }}
+          >
+            <RiftGlyph size={22} faded={rift.state === 'announced'} />
           </div>
         )}
 
@@ -648,7 +841,7 @@ export function MapView({
                 onSelect(next)
                 setFollowing(next)
               }}
-              title={`${player.name} — click to inspect`}
+              title={`${player.name}${spot.below ? ` (${spot.below === 'underground' ? 'underground' : 'in a tunnel'})` : ''} — click to inspect`}
               className="absolute"
               style={{
                 left: `${left * 100}%`,
@@ -693,6 +886,9 @@ export function MapView({
                 className="relative block h-full w-full overflow-hidden rounded-full border-2 bg-ui-bg"
                 style={{
                   borderColor: teamColour,
+                  // Underground: the ring breaks up and the face sinks back, so a hero
+                  // in a tunnel never reads as standing in the street drawn over them.
+                  borderStyle: spot.below ? 'dashed' : 'solid',
                   boxShadow: selected === i ? '0 0 0 2px var(--ui-accent)' : undefined,
                 }}
               >
@@ -702,6 +898,7 @@ export function MapView({
                     alt={player.name}
                     draggable={false}
                     className="h-full w-full object-cover"
+                    style={spot.below ? { opacity: 0.55 } : undefined}
                   />
                 ) : (
                   <span className="sr-only">{player.name}</span>
@@ -799,6 +996,7 @@ export function MapView({
                 ['Casts', showCasts, setShowCasts],
                 ['Shots', showShots, setShowShots],
                 ['Camps', showCamps, setShowCamps],
+                ['Powerups', showPowerups, setShowPowerups],
                 ['Timers', showTimers, setShowTimers],
               ] as const
             ).map(([label, on, set]) => (
@@ -809,12 +1007,33 @@ export function MapView({
           </ToggleGroup>
           <DetailSelect label="Crates" value={crateDetail} onChange={setCrateDetail} />
           <DetailSelect label="Statues" value={statueDetail} onChange={setStatueDetail} />
+          {hasTunnels && (
+            <label className="bg-ui-surface/95 border-ui-line rounded-ui flex items-center gap-1.5 border py-0.5 pr-1 pl-2 text-[0.75rem]">
+              <span className="text-ui-muted">Map</span>
+              <select
+                value={mapLayer}
+                onChange={(event) => setMapLayer(event.target.value as MapLayer)}
+                className="bg-ui-surface text-ui-fg rounded-[4px] px-1 py-0.5"
+              >
+                {MAP_LAYERS.filter(
+                  ([value]) => value === 'auto' || value === 'streets' || belowArt[value],
+                ).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {value === 'auto' && below ? `Auto (${below})` : label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {snackSpots.length > 0 && (
+            <DetailSelect label="Snacks" value={snackDetail} onChange={setSnackDetail} />
+          )}
           <ToggleGroup label="View map as">
             {(
               [
                 ['neutral', 'Neutral', undefined],
-                [AMBER, 'Amber', 'var(--data-team-amber)'],
-                [SAPPHIRE, 'Sapphire', 'var(--data-team-sapphire)'],
+                [AMBER, TEAM_SHORT_NAMES[AMBER], 'var(--data-team-amber)'],
+                [SAPPHIRE, TEAM_SHORT_NAMES[SAPPHIRE], 'var(--data-team-sapphire)'],
               ] as const
             ).map(([team, label, dot]) => (
               <Toggle key={team} on={viewAs === team} dot={dot} onClick={() => setViewAs(team)}>
@@ -843,6 +1062,8 @@ export function MapView({
             sinners={sinners}
             crates={crates}
             statues={statues}
+            snacks={snacks}
+            powerups={powerups}
           />
         )}
       </div>

@@ -1,3 +1,6 @@
+import { belowAt, type Below } from '../map/below'
+import { isCurrentMap } from '../map/version'
+
 /**
  * The shape the wasm parser emits. Mirrors the `Serialize` structs in
  * demo-parser/src/lib.rs; the two have to be changed together.
@@ -16,7 +19,7 @@ export type Player = {
   steamId: string
   name: string
   heroId: number
-  /** 2 is the Amber Hand, 3 the Sapphire Flame. */
+  /** 2 is the Hidden King's side (amber), 3 the Archmother's (sapphire). */
   team: number
   /** Ranked badge at match start, tier * 10 + subtier; 0 when unranked. */
   rank: number
@@ -74,6 +77,29 @@ export type Positions = {
    * counter-clockwise -- the game's own convention.
    */
   yaw: number[][]
+  /**
+   * Per player, when they were in a tunnel: `[start, end, start, end, ...]` in position
+   * frames, `end` exclusive. Both maps have tunnels.
+   */
+  tunnel: number[][]
+}
+
+/**
+ * Every item shop, in `Positions.quant` steps, with its team: 4 (neutral) for the two
+ * underground shops either team can use. Fixed for the match.
+ */
+export type Shops = {
+  x: number[]
+  y: number[]
+  z: number[]
+  team: number[]
+}
+
+/** The tunnels' plan, from the current map only: `[x1, y1, x2, y2]` lines in `quant`
+ * steps. Not drawn. */
+export type Tunnels = {
+  quant: number
+  lines: [number, number, number, number][]
 }
 
 /**
@@ -86,7 +112,7 @@ export type Positions = {
  * run one entry per frame for as long as it existed.
  */
 export type Creep = {
-  /** 2 is the Amber Hand, 3 the Sapphire Flame. */
+  /** 2 is the Hidden King's side (amber), 3 the Archmother's (sapphire). */
   team: number
   startFrame: number
   x: number[]
@@ -124,7 +150,8 @@ export type ObjectiveKind = 'guardian' | 'walker' | 'baseGuardian' | 'shrine' | 
  */
 export type Objective = {
   kind: ObjectiveKind
-  /** 2 is the Amber Hand, 3 the Sapphire Flame, 4 neutral (the Mid-Boss). */
+  /** 2 is the Hidden King's side (amber), 3 the Archmother's (sapphire), 4 neutral
+   * (the Mid-Boss). */
   team: number
   /** A single point, not an array: this kind of objective never moves. */
   x: number
@@ -235,8 +262,8 @@ export type Items = {
 
 /**
  * Every neutral creep that spawned, in time order. Which camp each belongs to is worked
- * out against the minimap's named camps -- see ./mapState. A death is -1 where it was
- * never seen: creeps far from every player are not sent at all.
+ * out against the camps -- see ./mapState. A death is -1 where it was never seen:
+ * creeps far from every player are not sent at all.
  */
 export type Neutrals = {
   /** Ticks. */
@@ -246,6 +273,22 @@ export type Neutrals = {
   y: number[]
   /** Ticks, or -1. */
   died: number[]
+  /** 1 to 3 (0 where unknown), from its health at spawn. */
+  tier: number[]
+}
+
+export type PowerupKind = 'gun' | 'survival' | 'casting' | 'movement'
+
+export type Powerups = Breakables & { kind: PowerupKind[] }
+
+/**
+ * Where the neutral camps are, as the replay's game rules list them, in `Events.quant`
+ * steps. Only matches from the 2026-10 update on carry it; before, both are empty and
+ * the camps come from ../map/camps instead.
+ */
+export type CampSpots = {
+  x: number[]
+  y: number[]
 }
 
 /**
@@ -263,6 +306,26 @@ export type Breakables = {
    * to the nearest hero within 600 units, a Sinner's Sacrifice to the last hero to hit
    * it. */
   by: number[]
+}
+
+/**
+ * Every Unstable Rift, one entry each in order: announced, open 20 s later on a side
+ * lane's bridge, then taken by a team or -- contested for its full minute -- spilled as
+ * soul orbs for anyone. Times are ticks, -1 where it never happened in the replay.
+ */
+export type RiftEvents = {
+  t: number[]
+  open: number[]
+  /** Where it opens, in `Events.quant` steps. */
+  x: number[]
+  y: number[]
+  /** When a hero first stood on it. */
+  contested: number[]
+  /** When it was taken or spilled; -1 if still open when the match ended. */
+  end: number[]
+  outcome: ('captured' | 'released' | 'open')[]
+  /** The team that captured it, or -1. */
+  team: number[]
 }
 
 /** Everything that happened to the Urn, in time order. */
@@ -299,13 +362,26 @@ export type Events = {
   sources: number[]
   items: Items
   neutrals: Neutrals
+  camps: CampSpots
   urn: UrnEvents
+  rifts: RiftEvents
   /** Each time the Mid-Boss fell, and the player credited (-1 for none). */
   midBossKills: { t: number[]; player: number[] }
   crates: Breakables
   sinners: Breakables
   /** Golden Statues: breakable props like crates, on the same loop. */
   statues: Breakables
+  /**
+   * Healing Snacks (from the 2026-10 update): one life from when a snack is there to
+   * eat to when it was eaten, `by` the nearest hero then. Empty for older matches.
+   */
+  snacks: Breakables
+  /**
+   * Powerups: one entry per drop -- two every 5:00 of game clock, one at each spawner --
+   * like `Breakables`, `broken` being when it was taken (punched) and `by` the nearest
+   * hero then; plus which kind it was.
+   */
+  powerups: Powerups
 }
 
 /** A point the in-game clock was set at; between anchors it runs, unless paused. */
@@ -337,11 +413,14 @@ export type IncomeSource =
   'kills' | 'assists' | 'lane' | 'neutrals' | 'objectives' | 'breakables' | 'teamBonus' | 'other'
 
 export type Timeline = {
+  /** The game build the match was played on, or 0 where the replay did not say. */
+  build: number
   /**
    * Seconds from the start of the recording -- where every time here is measured from --
-   * to 0:00 on the in-game clock. A replay starts during the pre-game countdown, so this
-   * is about thirty. Show times with `gameClock` rather than as they are: it also takes
-   * pauses out, which this does not.
+   * to 0:00 on the in-game clock. A replay used to start during the pre-game countdown,
+   * so this was about thirty; since the 2026-10 update it starts at 0:00. Show times
+   * with `gameClock` rather than as they are: it also takes pauses out, which this does
+   * not.
    */
   clockStart: number
   /** The in-game clock, pauses included. */
@@ -358,6 +437,9 @@ export type Timeline = {
   creeps: Creeps
   objectives: Objectives
   lanes: Lanes
+  /** Absent or empty for matches from before the 2026-10 update. */
+  tunnels: Tunnels
+  shops: Shops
   events: Events
   income: Income
 }
@@ -375,6 +457,18 @@ export type Spot = {
   alive: boolean
   /** Where they are looking, in degrees: 0 east, 90 north, counter-clockwise. */
   yaw: number
+  /** Where below the streets they are, if they are: see ../map/below. */
+  below: Below | null
+}
+
+/** Whether frame `frame` falls in one of `runs` (`[start, end, ...]`, end exclusive). */
+export function inRuns(runs: number[] | undefined, frame: number): boolean {
+  if (!runs) return false
+  for (let r = 0; r < runs.length; r += 2) {
+    if (frame < runs[r]) return false
+    if (frame < runs[r + 1]) return true
+  }
+  return false
 }
 
 /**
@@ -397,6 +491,8 @@ export function lerpAngle(from: number, to: number, t: number) {
  */
 export function spotsAt(timeline: Timeline, seconds: number): Spot[] {
   const p = timeline.positions
+  // Both maps have rooms under the middle and tunnels, each its own.
+  const currentMap = isCurrentMap(timeline.build ?? 0)
   const exact = seconds * p.hz
   const i = Math.max(0, Math.min(Math.floor(exact), p.frames - 1))
   const next = Math.min(i + 1, p.frames - 1)
@@ -416,6 +512,13 @@ export function spotsAt(timeline: Timeline, seconds: number): Spot[] {
       hpFraction: maxHp > 0 ? Math.min(hp / maxHp, 1) : 0,
       alive: hp > 0,
       yaw: lerpAngle(p.yaw[n][i], p.yaw[n][next], blend),
+      below: belowAt(
+        lerp(p.x[n]) * p.quant,
+        lerp(p.y[n]) * p.quant,
+        lerp(p.z[n]) * p.quant,
+        inRuns(p.tunnel?.[n], Math.round(exact)),
+        currentMap,
+      ),
     }
   })
 }
@@ -722,9 +825,21 @@ export function rowsAt(timeline: Timeline, frame: number): Row[] {
   }))
 }
 
-/** The two factions, by the team number the replay uses. */
+/** The two factions, by the team number the replay uses. Named in code for their
+ * colours, amber and sapphire, which is all the replay says of them. */
 export const AMBER = 2
 export const SAPPHIRE = 3
+
+/** What each side is called on screen: the patron it fights for. */
+export const TEAM_NAMES: Record<number, string> = {
+  [AMBER]: 'The Hidden King',
+  [SAPPHIRE]: 'The Archmother',
+}
+/** The same, where space is short: a toggle, a timer. */
+export const TEAM_SHORT_NAMES: Record<number, string> = {
+  [AMBER]: 'Hidden King',
+  [SAPPHIRE]: 'Archmother',
+}
 
 /** Messages the worker sends back, in the order a successful parse produces them. */
 export type WorkerMessage =

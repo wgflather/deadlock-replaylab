@@ -5,9 +5,12 @@ import {
   breakablesAt,
   breaksBy,
   campHistories,
+  campSites,
   campsAt,
   midBossAt,
+  powerupsAt,
   respawnDelays,
+  riftAt,
   urnAt,
   type CampHistory,
 } from './mapState'
@@ -29,12 +32,16 @@ function timeline(over: Partial<Timeline['events']> = {}, midBossHp: number[] = 
     events: {
       hz: HZ,
       quant: 16,
-      neutrals: { t: [], x: [], y: [], died: [] },
+      neutrals: { t: [], x: [], y: [], died: [], tier: [] },
+      camps: { x: [], y: [] },
       urn: { t: [], kind: [], player: [], x: [], y: [] },
+      rifts: { t: [], open: [], x: [], y: [], contested: [], end: [], outcome: [], team: [] },
       midBossKills: { t: [], player: [] },
       crates: { t: [], x: [], y: [], broken: [], by: [] },
       sinners: { t: [], x: [], y: [], broken: [], by: [] },
       statues: { t: [], x: [], y: [], broken: [], by: [] },
+      snacks: { t: [], x: [], y: [], broken: [], by: [] },
+      powerups: { t: [], x: [], y: [], broken: [], by: [], kind: [] },
       ...over,
     },
   } as unknown as Timeline
@@ -55,11 +62,36 @@ describe('campHistories', () => {
         x: [100, 98, 101, 900],
         y: [0, 2, 1, 900],
         died: [s(200), s(210), -1, -1],
+        tier: [1, 1, 1, 1],
       },
     })
     const [drugStore, factory] = campHistories(tl, SITES)
     expect(drugStore).toMatchObject({ name: 'Drug Store', spawns: [150, 300], clears: [210, null] })
     expect(factory.spawns).toEqual([])
+  })
+})
+
+describe('campSites', () => {
+  it('falls back on the named camps when the replay lists none', () => {
+    expect(campSites(timeline()).length).toBeGreaterThan(30)
+  })
+
+  it("uses the replay's camps, tiered by their strongest creep, dropping empty ones", () => {
+    // Three spots (in 16-unit steps): north, south, and one nothing spawned at.
+    const tl = timeline({
+      camps: { x: [0, 100, 300], y: [200, -200, 0] },
+      neutrals: {
+        t: [s(300), s(300), s(300), s(120)],
+        x: [2, -2, 0, 101],
+        y: [201, 199, 200, -200],
+        died: [-1, -1, -1, -1],
+        tier: [2, 3, 2, 1],
+      },
+    })
+    expect(campSites(tl)).toEqual([
+      { name: 'Sapphire camp', side: 'sapphire', tier: 3, x: 0, y: 3200 },
+      { name: 'Amber camp', side: 'amber', tier: 1, x: 1600, y: -3200 },
+    ])
   })
 })
 
@@ -132,6 +164,40 @@ describe('urnAt', () => {
   })
 })
 
+describe('riftAt', () => {
+  // Taken by Amber, then spilled after a full contest, then still open at the end.
+  const tl = timeline({
+    rifts: {
+      t: [s(800), s(1200), s(1600)],
+      open: [s(820), s(1220), s(1620)],
+      x: [-473, 476, -473],
+      y: [0, 0, 0],
+      contested: [s(825), s(1230), -1],
+      end: [s(850), s(1290), -1],
+      outcome: ['captured', 'released', 'open'],
+      team: [2, -1, -1],
+    },
+  })
+
+  it('walks a Rift from announced to taken', () => {
+    expect(riftAt(tl, 100)).toMatchObject({ state: 'none', next: 800 })
+    expect(riftAt(tl, 810)).toMatchObject({ state: 'announced', x: -7568, opensAt: 820 })
+    expect(riftAt(tl, 822)).toMatchObject({ state: 'open', since: 820, contested: false })
+    expect(riftAt(tl, 830)).toMatchObject({ state: 'open', contested: true })
+    expect(riftAt(tl, 900)).toMatchObject({ state: 'over', outcome: 'captured', team: 2, next: 1200 })
+  })
+
+  it('counts the Rifts each team has taken so far', () => {
+    expect(riftAt(tl, 840).taken.get(2)).toBeUndefined()
+    expect(riftAt(tl, 900).taken.get(2)).toBe(1)
+  })
+
+  it('tells a spilled Rift from a taken one, and one the match ended on', () => {
+    expect(riftAt(tl, 1300)).toMatchObject({ state: 'over', outcome: 'released', team: -1 })
+    expect(riftAt(tl, 5000)).toMatchObject({ state: 'open', since: 1620 })
+  })
+})
+
 describe('midBossAt', () => {
   const tl = timeline({ midBossKills: { t: [s(3)], player: [5] } }, [0, 100, 50, 0, 0, 100])
 
@@ -180,5 +246,47 @@ describe('statues', () => {
       statues: { t: [s(180)], x: [1], y: [1], broken: [s(200)], by: [4] },
     })
     expect(breaksBy(tl, 4, 250)).toEqual([{ seconds: 200, kind: 'statue' }])
+  })
+})
+
+describe('snacks', () => {
+  it('credits eaten snacks, and counts a respawned one as standing again', () => {
+    // One spot: eaten at 300s by player 1, back 180s later and never eaten again.
+    const tl = timeline({
+      snacks: { t: [s(150), s(480)], x: [5, 5], y: [5, 5], broken: [s(300), -1], by: [1, -1] },
+    })
+    expect(breaksBy(tl, 1, 400)).toEqual([{ seconds: 300, kind: 'snack' }])
+    const spots = breakableSpots(tl.events.snacks)
+    expect(breakablesAt(tl.events.snacks, spots, HZ, 16, 400)[0]).toMatchObject({
+      standing: false,
+      nextSpawn: 480,
+    })
+    expect(breakablesAt(tl.events.snacks, spots, HZ, 16, 500)[0].standing).toBe(true)
+  })
+})
+
+describe('powerups', () => {
+  it('shows which kind stands at a spot, and credits the hero who took it', () => {
+    // One spawner: a gun powerup at 300s taken by player 2 at 320s, a casting one at 600s.
+    const tl = timeline({
+      powerups: {
+        t: [s(300), s(600)],
+        x: [-246, -246],
+        y: [9, 9],
+        broken: [s(320), -1],
+        by: [2, -1],
+        kind: ['gun', 'casting'],
+      },
+    })
+    const { powerups } = tl.events
+    const spots = breakableSpots(powerups)
+    expect(powerupsAt(powerups, spots, HZ, 16, 310)[0]).toMatchObject({ standing: true, kind: 'gun' })
+    expect(powerupsAt(powerups, spots, HZ, 16, 400)[0]).toMatchObject({
+      standing: false,
+      kind: null,
+      nextSpawn: 600,
+    })
+    expect(powerupsAt(powerups, spots, HZ, 16, 700)[0].kind).toBe('casting')
+    expect(breaksBy(tl, 2, 400)).toEqual([{ seconds: 320, kind: 'powerup', powerup: 'gun' }])
   })
 })

@@ -1,5 +1,5 @@
 import { CAMP_SITES, type CampSite } from '../map/camps'
-import type { Breakables, Timeline } from './types'
+import type { Breakables, PowerupKind, Powerups, Timeline } from './types'
 
 /**
  * The map's timers at a moment of playback: which neutral camps are up and when the
@@ -29,12 +29,9 @@ export type CampHistory = CampSite & {
   clears: (number | null)[]
 }
 
-/**
- * Every camp's spawns and clears, from the replay's creeps and the minimap's named camps:
- * each creep belongs to the named camp nearest where it spawned.
- */
-export function campHistories(timeline: Timeline, sites: CampSite[] = CAMP_SITES): CampHistory[] {
-  const { hz, quant, neutrals } = timeline.events
+/** Which creeps belong to which site: each to the one nearest where it spawned. */
+function membersOf(timeline: Timeline, sites: { x: number; y: number }[]): number[][] {
+  const { quant, neutrals } = timeline.events
   const members: number[][] = sites.map(() => [])
   for (let i = 0; i < neutrals.t.length; i++) {
     const x = neutrals.x[i] * quant
@@ -50,6 +47,51 @@ export function campHistories(timeline: Timeline, sites: CampSite[] = CAMP_SITES
     })
     if (best >= 0) members[best].push(i)
   }
+  return members
+}
+
+/** A camp further than this from the centre line belongs to that side's half. */
+const SIDE_REACH = 500
+const SIDE_NAMES: Record<CampSite['side'], string> = {
+  amber: 'Amber camp',
+  sapphire: 'Sapphire camp',
+  lane: 'Lane camp',
+}
+
+/**
+ * The camps to track: the replay's own list where it has one (matches from the 2026-10
+ * update on), else the minimap artwork's named camps from before it.
+ *
+ * The replay says only where a camp is, so the rest is worked out. Its tier is that of
+ * the strongest creep that spawned there -- a camp can mix tiers, one big creep with
+ * two smaller -- and a spot nothing ever spawned at is left out, as it could only ever
+ * show as down. Sapphire is the north half, as on the older map.
+ */
+export function campSites(timeline: Timeline): CampSite[] {
+  const spots = timeline.events.camps
+  if (!spots?.x.length) return CAMP_SITES
+  const { quant, neutrals } = timeline.events
+  const all = spots.x.map((x, i) => ({ x: x * quant, y: spots.y[i] * quant }))
+  const members = membersOf(timeline, all)
+  return all.flatMap((spot, s) => {
+    const tier = Math.max(0, ...members[s].map((i) => neutrals.tier?.[i] ?? 0))
+    if (!members[s].length) return []
+    const side: CampSite['side'] =
+      spot.y > SIDE_REACH ? 'sapphire' : spot.y < -SIDE_REACH ? 'amber' : 'lane'
+    return [{ name: SIDE_NAMES[side], side, tier: Math.min(3, Math.max(1, tier)) as CampSite['tier'], ...spot }]
+  })
+}
+
+/**
+ * Every camp's spawns and clears, from the replay's creeps and its camps (see
+ * `campSites`): each creep belongs to the camp nearest where it spawned.
+ */
+export function campHistories(
+  timeline: Timeline,
+  sites: CampSite[] = campSites(timeline),
+): CampHistory[] {
+  const { hz, neutrals } = timeline.events
+  const members = membersOf(timeline, sites)
 
   return sites.map((site, s) => {
     const waves: number[][] = []
@@ -164,6 +206,53 @@ export function urnAt(timeline: Timeline, seconds: number): UrnState {
   }
 }
 
+/** The Rift's capture circle, in world units: the game's 20 metres. */
+export const RIFT_RADIUS = 787.4
+
+export type RiftState =
+  | { state: 'none'; next: number | null }
+  | { state: 'announced'; x: number; y: number; opensAt: number }
+  | { state: 'open'; x: number; y: number; since: number; contested: boolean }
+  | {
+      state: 'over'
+      outcome: 'captured' | 'released'
+      /** The capturing team, or -1 when it spilled. */
+      team: number
+      at: number
+      next: number | null
+    }
+
+/** The Unstable Rift at `seconds`, with how many each team has taken by then. */
+export function riftAt(timeline: Timeline, seconds: number): RiftState & { taken: Map<number, number> } {
+  const { hz, quant, rifts } = timeline.events
+  const taken = new Map<number, number>()
+  // When each Rift was first known of: its warning, or its opening if the replay missed that.
+  const start = (i: number) => (rifts.t[i] >= 0 ? rifts.t[i] : rifts.open[i]) / hz
+  let last = -1
+  for (let i = 0; i < rifts.t.length && start(i) <= seconds; i++) {
+    last = i
+    const end = rifts.end[i]
+    if (rifts.outcome[i] === 'captured' && end >= 0 && end / hz <= seconds) {
+      taken.set(rifts.team[i], (taken.get(rifts.team[i]) ?? 0) + 1)
+    }
+  }
+  const next = last + 1 < rifts.t.length ? start(last + 1) : null
+  if (last < 0) return { state: 'none', next, taken }
+  const x = rifts.x[last] * quant
+  const y = rifts.y[last] * quant
+  const open = rifts.open[last] / hz
+  const end = rifts.end[last] / hz
+  if (rifts.open[last] < 0 || seconds < open) {
+    return { state: 'announced', x, y, opensAt: rifts.open[last] < 0 ? Infinity : open, taken }
+  }
+  if (rifts.end[last] < 0 || seconds < end) {
+    const contested = rifts.contested[last] >= 0 && rifts.contested[last] / hz <= seconds
+    return { state: 'open', x, y, since: open, contested, taken }
+  }
+  const outcome = rifts.outcome[last] === 'released' ? 'released' : 'captured'
+  return { state: 'over', outcome, team: rifts.team[last], at: end, next, taken }
+}
+
 export type MidBossState =
   | { state: 'up'; hpFraction: number }
   | { state: 'down'; killedAt: number | null; killer: number | null; nextSpawn: number | null }
@@ -249,11 +338,37 @@ export function breakablesAt(
   })
 }
 
-/** One break credited to a player, for their panel. */
-export type Break = { seconds: number; kind: 'crate' | 'sinner' | 'statue' }
+/** A powerup spawner's spot at a moment: like a breakable's, plus which powerup is
+ * there to take, if one is. */
+export type PowerupSpot = BreakableSpot & { kind: PowerupKind | null }
 
-/** Every crate and Sinner's Sacrifice `player` was credited with breaking up to
- * `seconds`, oldest first. */
+/** Both powerup spots at `seconds`. */
+export function powerupsAt(
+  list: Powerups,
+  spots: ReturnType<typeof breakableSpots>,
+  hz: number,
+  quant: number,
+  seconds: number,
+): PowerupSpot[] {
+  const tick = seconds * hz
+  return breakablesAt(list, spots, hz, quant, seconds).map((spot, id) => {
+    const lives = spots[id].lives
+    let life = -1
+    while (life + 1 < lives.length && list.t[lives[life + 1]] <= tick) life++
+    return { ...spot, kind: spot.standing ? list.kind[lives[life]] : null }
+  })
+}
+
+/** One break credited to a player, for their panel. */
+export type Break = {
+  seconds: number
+  kind: 'crate' | 'sinner' | 'statue' | 'snack' | 'powerup'
+  /** Which powerup, for a powerup. */
+  powerup?: PowerupKind
+}
+
+/** Every crate, statue and Sinner's Sacrifice `player` was credited with breaking, and
+ * every Healing Snack and powerup they took, up to `seconds`, oldest first. */
 export function breaksBy(timeline: Timeline, player: number, seconds: number): Break[] {
   const { hz, crates, sinners } = timeline.events
   const out: Break[] = []
@@ -266,6 +381,13 @@ export function breaksBy(timeline: Timeline, player: number, seconds: number): B
   take(crates, 'crate')
   take(sinners, 'sinner')
   take(timeline.events.statues, 'statue')
+  take(timeline.events.snacks, 'snack')
+  const { powerups } = timeline.events
+  powerups.by.forEach((by, i) => {
+    const at = powerups.broken[i] / hz
+    if (by === player && powerups.broken[i] >= 0 && at <= seconds)
+      out.push({ seconds: at, kind: 'powerup', powerup: powerups.kind[i] })
+  })
   return out.sort((a, b) => a.seconds - b.seconds)
 }
 

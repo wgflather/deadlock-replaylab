@@ -1,0 +1,27 @@
+# Vendored from https://github.com/blukai/haste (rev e5491c37, BSD-3-Clause, see license.txt)
+# and wired in through [patch] in ../../Cargo.toml. Local changes, both for the Deadlock
+# update of 2026-10 (upstream has no fix yet):
+#   - fielddecoder.rs/fieldmetadata.rs: the new "fixed8" var encoder (raw byte, not varint)
+#   - fielddecoder.rs/fieldmetadata.rs: the new CUtlBinaryBlock type (varint length + bytes)
+# Drop the patch once upstream handles both.
+[package]
+name = "haste_core"
+version = "0.0.0"
+edition = "2021"
+license = "BSD-3-Clause"
+
+[dependencies]
+anyhow = "1.0.86"
+dyn-clone = "1.0.17"
+prost = "0.13.3"
+snap = "1.1.1"
+thiserror = "1.0.64"
+mars = { git = "https://github.com/blukai/mars.git", rev = "5d831c5", features = ["bitbuf", "fxhash", "nohash", "varint"] }
+valveprotos = { git = "https://github.com/blukai/valveprotos-rs.git", rev = "63620c46236ed0f03a9e8b75954a4dafd0fe8e53" }
+haste_vartype = { git = "https://github.com/blukai/haste.git", rev = "e5491c37fb70ea7cc762423406a450dd956c8050" }
+
+[features]
+deadlock = ["valveprotos/deadlock"]
+dota2 = ["valveprotos/dota2"]
+preserve-metadata = []
+protobuf-src = ["valveprotos/protobuf-src"]

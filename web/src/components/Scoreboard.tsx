@@ -1,11 +1,11 @@
-import { AMBER, SAPPHIRE, type Row } from '../demo/types'
+import { AMBER, SAPPHIRE, TEAM_NAMES, type Row } from '../demo/types'
 import { compact } from '../stats/format'
 import { rankLabel } from '../demo/rank'
 import { HeroIcon } from './HeroIcon'
 
 const TEAMS = [
-  { id: AMBER, name: 'Amber Hand', text: 'text-data-amber' },
-  { id: SAPPHIRE, name: 'Sapphire Flame', text: 'text-data-sapphire' },
+  { id: AMBER, name: TEAM_NAMES[AMBER], text: 'text-data-amber' },
+  { id: SAPPHIRE, name: TEAM_NAMES[SAPPHIRE], text: 'text-data-sapphire' },
 ]
 
 const HEAD = 'column-head py-2 text-[0.6875rem] whitespace-nowrap'

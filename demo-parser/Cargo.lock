@@ -158,7 +158,6 @@ dependencies = [
 [[package]]
 name = "haste_core"
 version = "0.0.0"
-source = "git+https://github.com/blukai/haste.git?rev=e5491c37fb70ea7cc762423406a450dd956c8050#e5491c37fb70ea7cc762423406a450dd956c8050"
 dependencies = [
  "anyhow",
  "dyn-clone",

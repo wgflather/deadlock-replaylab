@@ -1,4 +1,12 @@
-import { AMBER, SAPPHIRE, spotsAt, type Row, type Spot, type Timeline } from '../demo/types'
+import {
+  AMBER,
+  SAPPHIRE,
+  TEAM_NAMES,
+  spotsAt,
+  type Row,
+  type Spot,
+  type Timeline,
+} from '../demo/types'
 import { gameClock } from '../demo/usePlayback'
 import { heroPortrait } from '../heroes'
 import { compact } from '../stats/format'
@@ -15,8 +23,8 @@ import { compact } from '../stats/format'
  */
 
 const TEAMS = [
-  { id: AMBER, name: 'Amber Hand', colour: 'var(--data-team-amber)' },
-  { id: SAPPHIRE, name: 'Sapphire Flame', colour: 'var(--data-team-sapphire)' },
+  { id: AMBER, name: TEAM_NAMES[AMBER], colour: 'var(--data-team-amber)' },
+  { id: SAPPHIRE, name: TEAM_NAMES[SAPPHIRE], colour: 'var(--data-team-sapphire)' },
 ] as const
 
 function Portrait({
@@ -160,7 +168,7 @@ export function TopHud({
           <span
             className="w-8 text-right text-[1.25rem] leading-none font-semibold"
             style={{ color: amber.colour }}
-            aria-label={`Amber Hand ${amber.kills} kills`}
+            aria-label={`${TEAM_NAMES[AMBER]} ${amber.kills} kills`}
           >
             {amber.kills}
           </span>
@@ -168,7 +176,7 @@ export function TopHud({
           <span
             className="w-8 text-[1.25rem] leading-none font-semibold"
             style={{ color: sapphire.colour }}
-            aria-label={`Sapphire Flame ${sapphire.kills} kills`}
+            aria-label={`${TEAM_NAMES[SAPPHIRE]} ${sapphire.kills} kills`}
           >
             {sapphire.kills}
           </span>

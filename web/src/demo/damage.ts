@@ -1,3 +1,4 @@
+import { sourceOf } from '../abilities'
 import { lowerBound } from './events'
 import type { DamageKind, Timeline } from './types'
 
@@ -34,17 +35,61 @@ function partyKey(party: Party) {
   return party.player >= 0 ? `p${party.player}` : party.kind
 }
 
-export type Share<T> = { key: string; of: T; amount: number; hits: number }
+/**
+ * The game's three kinds of damage, worked out from what dealt a hit: a hero's gun is
+ * gun damage, a melee swing (or a melee item's proc) is melee, and every other ability
+ * or item is spirit. An approximation -- a few items deal gun damage on proc -- but the
+ * replay's own damage-kind field marks nearly every hit a bullet, so it cannot say better.
+ * "other" is a hit that named no source: a trooper's, a neutral's or an objective's.
+ */
+export type DamageType = 'gun' | 'spirit' | 'melee' | 'other'
+
+export const DAMAGE_TYPES: readonly DamageType[] = ['gun', 'spirit', 'melee', 'other']
+
+/** The kind of damage deadlock-api id `id` deals, or "other" for an unknown one. */
+export function damageType(id: number | undefined): DamageType {
+  const source = id === undefined ? undefined : sourceOf(id)
+  if (!source) return 'other'
+  if (source.kind === 'weapon') return 'gun'
+  if (/(^|_)melee_/.test(source.className)) return 'melee'
+  return 'spirit'
+}
+
+export type Share<T> = {
+  key: string
+  of: T
+  amount: number
+  hits: number
+  /** How much of `amount` was each kind of damage. */
+  byType: Record<DamageType, number>
+}
+
+/** A share broken down one level further: a party into the sources the damage came
+ * from, or a source into the parties it was between. `parts` are largest first. */
+export type Group<T, U> = Share<T> & { parts: Share<U>[] }
 
 /** One direction of a player's damage: everything they dealt, or everything they took. */
 export type Side = {
   total: number
   hits: number
-  /** Who it was dealt to, or taken from, largest first. */
-  byParty: Share<Party>[]
-  /** What it came from -- an index into `Events.sources`, -1 for none -- largest first. */
-  bySource: Share<number>[]
+  /** Who it was dealt to, or taken from, largest first, each split by what it came from:
+   * an index into `Events.sources`, -1 for none. */
+  byParty: Group<Party, number>[]
+  /** The same damage by what it came from, largest first, each split by party. */
+  bySource: Group<number, Party>[]
+  /** The part of `total` between heroes, and the part with troopers, neutrals and
+   * objectives: kept apart so farming and pushing do not drown out the fights. */
+  heroes: TypeSplit
+  world: TypeSplit
 }
+
+/** An amount of damage and how much of it was each kind. */
+export type TypeSplit = { total: number; byType: Record<DamageType, number> }
+
+const emptySplit = (): TypeSplit => ({
+  total: 0,
+  byType: { gun: 0, spirit: 0, melee: 0, other: 0 },
+})
 
 export type Hit = {
   /** Index into `Events.damage`: stable, so a React key. */
@@ -59,18 +104,50 @@ export type Hit = {
 
 export type DamageSummary = { dealt: Side; taken: Side; recent: Hit[] }
 
-function tally<T>(shares: Map<string, Share<T>>, key: string, of: T, amount: number) {
-  const share = shares.get(key)
-  if (share) {
-    share.amount += amount
-    share.hits++
-  } else {
-    shares.set(key, { key, of, amount, hits: 1 })
-  }
+/** A group being summed: its own share, and its parts by key. */
+type Tally<T, U> = Share<T> & { inner: Map<string, Share<U>> }
+
+function add<T>(share: Share<T>, amount: number, type: DamageType) {
+  share.amount += amount
+  share.hits++
+  share.byType[type] += amount
 }
 
-function largestFirst<T>(shares: Map<string, Share<T>>) {
-  return [...shares.values()].sort((a, b) => b.amount - a.amount)
+function newShare<T>(key: string, of: T): Share<T> {
+  return { key, of, amount: 0, hits: 0, byType: emptySplit().byType }
+}
+
+function tally<T, U>(
+  groups: Map<string, Tally<T, U>>,
+  key: string,
+  of: T,
+  partKey: string,
+  partOf: U,
+  amount: number,
+  type: DamageType,
+) {
+  let group = groups.get(key)
+  if (!group) {
+    group = { ...newShare(key, of), inner: new Map() }
+    groups.set(key, group)
+  }
+  add(group, amount, type)
+  let part = group.inner.get(partKey)
+  if (!part) {
+    part = newShare(partKey, partOf)
+    group.inner.set(partKey, part)
+  }
+  add(part, amount, type)
+}
+
+const largestFirst = <T extends { amount: number }>(shares: Iterable<T>) =>
+  [...shares].sort((a, b) => b.amount - a.amount)
+
+function finishGroups<T, U>(groups: Map<string, Tally<T, U>>): Group<T, U>[] {
+  return largestFirst(groups.values()).map(({ inner, ...share }) => ({
+    ...share,
+    parts: largestFirst(inner.values()),
+  }))
 }
 
 /**
@@ -85,7 +162,7 @@ export function damageSummary(
   to: number,
   recentCount = 8,
 ): DamageSummary {
-  const { hz, kinds, damage: d } = timeline.events
+  const { hz, kinds, sources, damage: d } = timeline.events
   const mine = index[player] ?? []
   const ticks = mine.map((i) => d.t[i])
   const start = lowerBound(ticks, from * hz)
@@ -95,17 +172,22 @@ export function damageSummary(
     dealt: {
       total: 0,
       hits: 0,
-      parties: new Map<string, Share<Party>>(),
-      sources: new Map<string, Share<number>>(),
+      parties: new Map<string, Tally<Party, number>>(),
+      sources: new Map<string, Tally<number, Party>>(),
+      heroes: emptySplit(),
+      world: emptySplit(),
     },
     taken: {
       total: 0,
       hits: 0,
-      parties: new Map<string, Share<Party>>(),
-      sources: new Map<string, Share<number>>(),
+      parties: new Map<string, Tally<Party, number>>(),
+      sources: new Map<string, Tally<number, Party>>(),
+      heroes: emptySplit(),
+      world: emptySplit(),
     },
   }
   const recent: Hit[] = []
+  const types = sources.map(damageType)
 
   for (let k = end - 1; k >= start; k--) {
     const i = mine[k]
@@ -119,8 +201,13 @@ export function damageSummary(
     const side = dealt ? sides.dealt : sides.taken
     side.total += amount
     side.hits++
-    tally(side.parties, partyKey(other), other, amount)
-    tally(side.sources, String(d.source[i]), d.source[i], amount)
+    const type = types[d.source[i]] ?? 'other'
+    const source = d.source[i]
+    tally(side.parties, partyKey(other), other, String(source), source, amount, type)
+    tally(side.sources, String(source), source, partyKey(other), other, amount, type)
+    const split = other.player >= 0 ? side.heroes : side.world
+    split.total += amount
+    split.byType[type] += amount
     if (recent.length < recentCount) {
       recent.push({ id: i, seconds: d.t[i] / hz, dealt, other, amount, source: d.source[i] })
     }
@@ -129,8 +216,10 @@ export function damageSummary(
   const finish = (side: (typeof sides)['dealt']): Side => ({
     total: side.total,
     hits: side.hits,
-    byParty: largestFirst(side.parties),
-    bySource: largestFirst(side.sources),
+    byParty: finishGroups(side.parties),
+    bySource: finishGroups(side.sources),
+    heroes: side.heroes,
+    world: side.world,
   })
   return { dealt: finish(sides.dealt), taken: finish(sides.taken), recent }
 }

@@ -58,6 +58,9 @@
   --data-item-weapon: #d9913b;
   --data-item-vitality: #74b43f;
   --data-item-spirit: #b07ae0;
+  /* Melee, the third kind of damage beside the gun's orange and spirit's violet: a warm
+     light grey, clear of both hues. */
+  --data-melee: #d6cfc2;
   /* A benchmark line on a chart -- the match average. Validated against both team
      colours on the panel surface (normal-vision separation 21.6, colour-blind 20.8). */
   --data-average: #f1ede6;
@@ -73,6 +76,16 @@
   /* A Golden Statue: gold, brighter and yellower than the Amber team's orange, and a
      statue's shape rather than a dot -- so the two are never read as one another. */
   --data-statue: #f3d562;
+  /* A Healing Snack: a health green, on an apple's round shape -- clear of a camp's teal
+     by hue and of a creep's dot by its leaf. */
+  --data-snack: #7ee081;
+  /* A powerup: the game draws its four icons in white, and so does this -- a near-white,
+     told apart by shape. Any hue would collide with a team, an item category or a camp. */
+  --data-powerup: #f1ede6;
+  /* The Unstable Rift: its icon's own pale teal (assets/map/unstable-rift.png), paler
+     and greener-white than a camp's -- the circle it is drawn on is the bridge's, where
+     no camp stands. */
+  --data-rift: #92ffeb;
   /* Where souls came from, one colour per source. A categorical set in a fixed order
      (the reference dark palette's eight slots), validated on the panel surface:
      every adjacent pair of the stack clears colour-blind separation 8.4 and

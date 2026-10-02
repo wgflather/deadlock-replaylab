@@ -2,7 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { SOURCE_LABELS } from '../demo/income'
 import { averageOf, METRICS, metricValues, niceTicks, type MetricId } from '../demo/performance'
 import type { IncomeSource } from '../demo/types'
-import { AMBER, SAPPHIRE, type Player, type Timeline } from '../demo/types'
+import {
+  AMBER,
+  SAPPHIRE,
+  TEAM_NAMES,
+  TEAM_SHORT_NAMES,
+  type Player,
+  type Timeline,
+} from '../demo/types'
 import { gameClock, recordingSeconds } from '../demo/usePlayback'
 import { compact } from '../stats/format'
 import { HeroFace } from './HeroIcon'
@@ -27,17 +34,22 @@ import { HeroFace } from './HeroIcon'
  */
 
 const TEAMS = [
-  { id: AMBER, name: 'Amber Hand', colour: 'var(--data-team-amber)' },
-  { id: SAPPHIRE, name: 'Sapphire Flame', colour: 'var(--data-team-sapphire)' },
+  { id: AMBER, name: TEAM_NAMES[AMBER], colour: 'var(--data-team-amber)' },
+  { id: SAPPHIRE, name: TEAM_NAMES[SAPPHIRE], colour: 'var(--data-team-sapphire)' },
 ] as const
 
 type AverageId = 'match' | 'amber' | 'sapphire'
 const AVERAGES: { id: AverageId; label: string; colour: string; team?: number }[] = [
   { id: 'match', label: 'Match average', colour: 'var(--data-average)' },
-  { id: 'amber', label: 'Amber average', colour: 'var(--data-team-amber)', team: AMBER },
+  {
+    id: 'amber',
+    label: `${TEAM_SHORT_NAMES[AMBER]} average`,
+    colour: 'var(--data-team-amber)',
+    team: AMBER,
+  },
   {
     id: 'sapphire',
-    label: 'Sapphire average',
+    label: `${TEAM_SHORT_NAMES[SAPPHIRE]} average`,
     colour: 'var(--data-team-sapphire)',
     team: SAPPHIRE,
   },

@@ -116,6 +116,10 @@
 //! Sapphire base (node 0) to the Amber base on the outer lanes and the other way round
 //! in the middle; and several hundred ownership changes per lane per match, always one
 //! contiguous run out from each base with an unowned stretch, if any, between them.
+//! Since the 2026-10 update a rope has as many again nodes with no index (-1) between
+//! the numbered ones -- 334 in all on one match -- which [`rope_order`] places along the
+//! rope; and the middle of each rope starts on team 4 rather than 1, read as nobody's
+//! the same way.
 //!
 //! Positions are stated once, the way an objective's are. Ownership is a list of
 //! changes rather than a per-frame array: a node changes owner a dozen or so times in
@@ -189,6 +193,14 @@
 //!    before or after the ability goes: both orders were seen. On two matches it spawned
 //!    every five minutes from 10:00, alternating sides, and was always delivered to the
 //!    side it did not spawn on.
+//!  - The Unstable Rift is the old King of the Hill under its new name, and the replay
+//!    still calls it that. It is announced by a spawner ([`RIFT_SPAWNER`]) appearing,
+//!    and opens 20 s later -- exactly, on fifteen Rifts over three matches -- when the
+//!    game rules name where it is ([`K_RIFT_AT`]) and set the scoring team
+//!    ([`K_RIFT_TEAM`]) to -1. The first hero on it starts the 60 s give-up timer
+//!    ([`K_RIFT_GIVE_UP`]). It ends when the scoring team is set: the capturing team, or
+//!    4 -- the neutral team -- on the give-up time itself, when it was contested to the
+//!    end and its souls spilled as orbs. It only ever opened on the two side-lane bridges.
 //!  - Crates and Golden Statues ([`BREAKABLE`]) and Sinner's Sacrifices ([`SINNER`]) break with a
 //!    debris message ([`MSG_BREAKABLE_DEBRIS`]) naming the entity (its field 1 holds an
 //!    entity message whose own field 1 is the handle). A crate never updates after it
@@ -262,13 +274,15 @@
 //! an AI view offset) -- the same kind of collision `m_PlayerDataGlobal` was.
 
 use haste::demofile::DemoFile;
+use haste::demostream::CmdHeader;
 use haste::entities::{
-    deadlock_coord_from_cell, ehandle_to_index, fkey_from_path, is_ehandle_valid, DeltaHeader,
+    ehandle_to_index, fkey_from_path, is_ehandle_valid, DeltaHeader,
     Entity,
 };
 use haste::parser::{Context, Parser, Visitor};
+use haste::valveprotos::common::EDemoCommands;
 use serde::Serialize;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::rc::Rc;
@@ -369,6 +383,91 @@ const MSG_BOSS_KILLED: u32 = 347;
 const MSG_BREAKABLE_DEBRIS: u32 = 500;
 /// The post-match summary: see the note in `income`.
 const MSG_POST_MATCH: u32 = 316;
+/// `net_Tick`: field 1 is the server tick, the clock `m_nMatchClockUpdateTick` counts in.
+const MSG_NET_TICK: u32 = 4;
+/// A health pickup. Since the 2026-10 update most are Healing Snacks ([`SUBCLASS_SNACK`]):
+/// 36 spots, each with a static `CCitadel_PickupSpawner` under it, all first there at
+/// 2:30 and back 180 s after being eaten. The pickup is one entity for the whole match
+/// that turns `m_bActive` off when eaten and on again when it respawns. The few other
+/// health pickups (`medic_trooper_aoe_health_pickup_*`, dropped by troopers) are left out.
+const PICKUP_HEALTH: u64 = haste::fxhash::hash_bytes(b"CCitadel_Pickup_Health");
+const SUBCLASS_SNACK: u64 = 1_436_690_691;
+const K_PICKUP_ACTIVE: u64 = fkey_from_path(&["m_bActive"]);
+/// A powerup on the map. Two `CCitadel_PickupItemSpawner`s, west and east of the
+/// middle, each drop one every 5:00 of game clock from 5:00, all four kinds equally
+/// likely (scripts/misc.vdata `citadel_item_powerup_spawner`); a hero takes one by
+/// punching it, for a 160 s buff. The pickup entities are pooled -- the same one comes
+/// back with a new subclass and place -- and, like a snack's, turn `m_bActive` off when
+/// taken. Present before the 2026-10 update too.
+const PICKUP_MODIFIER: u64 = haste::fxhash::hash_bytes(b"CCitadel_Pickup_Modifier");
+/// A powerup's kind, by subclass: MurmurHash2 of `<kind>_powerup_pickup`.
+fn powerup_kind(subclass: u64) -> Option<&'static str> {
+    match subclass {
+        201_785_745 => Some("gun"),
+        828_222_066 => Some("survival"),
+        15_572_055 => Some("casting"),
+        754_654_000 => Some("movement"),
+        _ => None,
+    }
+}
+/// Which list a pickup that toggles `m_bActive` goes in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pickup {
+    Snack,
+    Powerup(&'static str),
+    /// A pooled pickup entity that is not a powerup (any more).
+    Other,
+}
+/// A snack or powerup is credited to the nearest hero within this range when it is
+/// taken. A snack is walked over and a powerup punched, so whoever took it is right there.
+const PICKUP_CREDIT_RANGE: f32 = 300.0;
+/// An item shop: the volume a hero has to stand in to buy. Nine on the current map, seven
+/// of them a team's and two neutral ones underground; the base shop is one big box.
+const ITEM_SHOP: u64 = haste::fxhash::hash_bytes(b"CTriggerItemShop");
+/// A tunnel's volume (from the 2026-10 update): an axis-aligned box, `m_vecMins` to
+/// `m_vecMaxs` about the entity's origin, 100 of them, never rotated. A hero whose
+/// position is inside one is in a tunnel -- checked on a real match against two heroes
+/// seen running a sewer end to end, in it for exactly that stretch. Height alone cannot
+/// tell: the sewers are below the street but the mid-lane tunnels are level with it.
+const TUNNEL_TRIGGER: u64 = haste::fxhash::hash_bytes(b"CCitadelTunnelTrigger");
+const K_BOX_MINS: u64 = fkey_from_path(&["m_Collision", "m_vecMins"]);
+const K_BOX_MAXS: u64 = fkey_from_path(&["m_Collision", "m_vecMaxs"]);
+/// A point along a tunnel, linked to up to three others: the tunnels' plan, for drawing.
+/// Tunnel id 2 marks the pairs that are teleports rather than tunnels; those are left
+/// out of the drawing.
+const TUNNEL_NODE: u64 = haste::fxhash::hash_bytes(b"CCitadelTunnelNode");
+const K_TUNNEL_ID: u64 = fkey_from_path(&["m_nTunnelID"]);
+const K_TUNNEL_LINKS: [u64; 3] = [
+    fkey_from_path(&["m_hConnection1"]),
+    fkey_from_path(&["m_hConnection2"]),
+    fkey_from_path(&["m_hConnection3"]),
+];
+const TUNNEL_ID_TELEPORT: i64 = 2;
+/// Out of every tunnel box for at most this many position frames counts as still in:
+/// neighbouring boxes leave hairline seams a hero can be sampled in.
+const TUNNEL_SEAM_FRAMES: i32 = 2;
+/// A position's cell and offset on each axis, under the skeleton (most entities) and
+/// under the plain scene node (volumes such as triggers).
+const SKELETON_CELL: [u64; 3] = [
+    fkey_from_path(&["CBodyComponent", "m_skeletonInstance", "m_vecOrigin", "m_cellX"]),
+    fkey_from_path(&["CBodyComponent", "m_skeletonInstance", "m_vecOrigin", "m_cellY"]),
+    fkey_from_path(&["CBodyComponent", "m_skeletonInstance", "m_vecOrigin", "m_cellZ"]),
+];
+const SKELETON_VEC: [u64; 3] = [
+    fkey_from_path(&["CBodyComponent", "m_skeletonInstance", "m_vecOrigin", "m_vecX"]),
+    fkey_from_path(&["CBodyComponent", "m_skeletonInstance", "m_vecOrigin", "m_vecY"]),
+    fkey_from_path(&["CBodyComponent", "m_skeletonInstance", "m_vecOrigin", "m_vecZ"]),
+];
+const SCENE_CELL: [u64; 3] = [
+    fkey_from_path(&["CBodyComponent", "m_sceneNode", "m_vecOrigin", "m_cellX"]),
+    fkey_from_path(&["CBodyComponent", "m_sceneNode", "m_vecOrigin", "m_cellY"]),
+    fkey_from_path(&["CBodyComponent", "m_sceneNode", "m_vecOrigin", "m_cellZ"]),
+];
+const SCENE_VEC: [u64; 3] = [
+    fkey_from_path(&["CBodyComponent", "m_sceneNode", "m_vecOrigin", "m_vecX"]),
+    fkey_from_path(&["CBodyComponent", "m_sceneNode", "m_vecOrigin", "m_vecY"]),
+    fkey_from_path(&["CBodyComponent", "m_sceneNode", "m_vecOrigin", "m_vecZ"]),
+];
 /// A breakable prop: a crate or a Golden Statue, by subclass.
 const BREAKABLE: u64 = haste::fxhash::hash_bytes(b"CCitadel_BreakableProp");
 /// Which kind of breakable prop, by `m_nSubclassID`: see the module note.
@@ -386,6 +485,10 @@ const GAME_IN_PROGRESS: u64 = 7;
 const K_CLOCK_AT: u64 = fkey_from_path(&["m_pGameRules", "m_flMatchClockAtLastUpdate"]);
 const K_CLOCK_TICK: u64 = fkey_from_path(&["m_pGameRules", "m_nMatchClockUpdateTick"]);
 const K_PAUSED: u64 = fkey_from_path(&["m_pGameRules", "m_bGamePaused"]);
+/// The neutral camps, as the game rules list them for the minimap's camp timers (from the
+/// 2026-10 update on): each one's position, and whether it is the Mid-Boss's pit.
+const K_CAMP_ORIGINS: u64 = fkey_from_path(&["m_pGameRules", "m_vecNeutralCampTimerOrigins"]);
+const K_CAMP_IS_MID_BOSS: u64 = fkey_from_path(&["m_pGameRules", "m_vecNeutralCampTimerIsMidBoss"]);
 /// A Sinner's Sacrifice.
 const SINNER: u64 = haste::fxhash::hash_bytes(b"CNPC_Neutral_SinnersSacrifice");
 /// A crate break is credited to the nearest hero only if they are this close, in world
@@ -396,6 +499,18 @@ const SINNER_CREDIT_SECONDS: f32 = 10.0;
 /// `MSG_BOSS_KILLED`'s kind (field 4) for the Mid-Boss.
 const BOSS_KIND_MID_BOSS: u64 = 8;
 
+/// The Unstable Rift's warning, standing where it will open. See the module note on
+/// events.
+const RIFT_SPAWNER: u64 = haste::fxhash::hash_bytes(b"CCitadelItemKothSpawner");
+/// Where the open Rift is; far out of the world (`f32::MAX`) or zero when none is.
+const K_RIFT_AT: u64 = fkey_from_path(&["m_pGameRules", "m_vKothCashInCurrentLocation"]);
+/// -1 while a Rift is open; the capturing team, or [`TEAM_NEUTRAL`], once it is over.
+const K_RIFT_TEAM: u64 = fkey_from_path(&["m_pGameRules", "m_nKothScoringTeam"]);
+/// When an open Rift gives up its souls if nobody has taken it: `f32::MAX` until
+/// someone first stands on it.
+const K_RIFT_GIVE_UP: u64 = fkey_from_path(&["m_pGameRules", "m_timeKothGiveUp"]);
+/// The team that is neither side.
+const TEAM_NEUTRAL: i64 = 4;
 /// The Urn lying on the map, waiting to be picked up.
 const URN: u64 = haste::fxhash::hash_bytes(b"CCitadelItemPickupIdol");
 /// The Urn being carried: an ability on the carrier's hero.
@@ -597,6 +712,29 @@ struct Positions {
     /// counter-clockwise. A degree is finer than a minimap marker can show, and whole
     /// numbers keep the stream as small as the rest.
     yaw: Vec<Vec<i32>>,
+    /// Per player, when they were in a tunnel: `[start, end, start, end, ...]` in
+    /// position frames, `end` exclusive. See [`TUNNEL_TRIGGER`]. Empty for matches from
+    /// before the 2026-10 update, which had no tunnels.
+    tunnel: Vec<Vec<i32>>,
+}
+
+/// Every item shop on the map: where it is and whose. Team 4 -- neutral -- are the two
+/// underground shops, one on each side of the middle, which either team can use; the
+/// rest are the teams' own. Fixed for the match. See [`ITEM_SHOP`].
+#[derive(Default, Serialize)]
+struct Shops {
+    x: Vec<i32>,
+    y: Vec<i32>,
+    z: Vec<i32>,
+    team: Vec<u32>,
+}
+
+/// The tunnels under the map (from the 2026-10 update), for drawing: each a line between
+/// two nodes, as `[x1, y1, x2, y2]` in [`POSITION_QUANT`] steps.
+#[derive(Default, Serialize)]
+struct Tunnels {
+    quant: f32,
+    lines: Vec<[i32; 4]>,
 }
 
 /// One creep's whole life, start to death or the end of the match.
@@ -748,6 +886,17 @@ struct Neutrals {
     y: Vec<i32>,
     /// When its death was seen, or -1 where it never was.
     died: Vec<i32>,
+    /// 1 to 3, from its health at spawn; see [`creep_tier`].
+    tier: Vec<i32>,
+}
+
+/// Where the neutral camps are, as the game rules list them, the Mid-Boss's pit left
+/// out. Only builds from the 2026-10 update on send this; before, both are empty and the
+/// viewer falls back on its own list of camps.
+#[derive(Default, Serialize)]
+struct Camps {
+    x: Vec<i32>,
+    y: Vec<i32>,
 }
 
 /// Everything that happened to the Urn, in time order.
@@ -775,6 +924,26 @@ struct Breakables {
     /// Who broke it -- an index into `Timeline::players` -- or -1 when nobody could be
     /// credited. See the module note on the map's timers for how each kind is credited.
     by: Vec<i32>,
+}
+
+/// Every Unstable Rift in the match, one entry each, in order.
+#[derive(Default, Serialize)]
+struct Rifts {
+    /// When it was announced, or -1 if the replay began after.
+    t: Vec<i32>,
+    /// When it opened, or -1 if the match ended first.
+    open: Vec<i32>,
+    x: Vec<i32>,
+    y: Vec<i32>,
+    /// When a hero first stood on it, or -1 if nobody did.
+    contested: Vec<i32>,
+    /// When it was taken or gave up its souls, or -1 if it was still open at the end.
+    end: Vec<i32>,
+    /// "captured", "released" -- contested to the give-up time, its souls spilled for
+    /// anyone -- or "open".
+    outcome: Vec<&'static str>,
+    /// The team that captured it, or -1.
+    team: Vec<i32>,
 }
 
 /// Each time the Mid-Boss fell, and to whom.
@@ -816,12 +985,29 @@ struct Events {
     sources: Vec<u32>,
     items: Items,
     neutrals: Neutrals,
+    camps: Camps,
     urn: Urn,
+    rifts: Rifts,
     #[serde(rename = "midBossKills")]
     mid_boss_kills: MidBossKills,
     crates: Breakables,
     sinners: Breakables,
     statues: Breakables,
+    /// Healing Snacks (from the 2026-10 update): a life runs from when one is there to
+    /// eat to when it was eaten, `by` the nearest hero then. See [`PICKUP_HEALTH`].
+    snacks: Breakables,
+    powerups: Powerups,
+}
+
+/// Every powerup that was on the map, one entry per drop, like [`Breakables`]: when it
+/// dropped, where, when it was taken (punched) or -1, and `by` the nearest hero then.
+/// See [`PICKUP_MODIFIER`].
+#[derive(Default, Serialize)]
+struct Powerups {
+    #[serde(flatten)]
+    lives: Breakables,
+    /// "gun", "survival", "casting" or "movement" -- the game's own names for them.
+    kind: Vec<&'static str>,
 }
 
 /// A point the game clock was set at. Between anchors it runs with the recording, unless
@@ -837,6 +1023,9 @@ struct ClockAnchor {
 
 #[derive(Serialize)]
 struct Timeline {
+    /// The game build the match was played on (the demo file header's `build_num`), or 0
+    /// where the header did not say. The map changed with build [`BUILD_BIG_CELL_GRID`].
+    build: u32,
     /// Seconds from the start of the recording to 0:00 on the in-game clock. See the
     /// module note on the match clock.
     #[serde(rename = "clockStart")]
@@ -856,6 +1045,9 @@ struct Timeline {
     creeps: Creeps,
     objectives: Objectives,
     lanes: Lanes,
+    tunnels: Tunnels,
+    /// In [`POSITION_QUANT`] steps, like everything else.
+    shops: Shops,
     events: Events,
     /// Souls earned, by source. See the note in `income`.
     income: income::Income,
@@ -1015,7 +1207,9 @@ struct State {
     source_ids: BTreeMap<u32, i32>,
 
     /// Every neutral creep that spawned: tick and position. Grouped into camps at the end.
-    neutral_spawns: Vec<(i32, [f32; 2])>,
+    neutral_spawns: Vec<(i32, [f32; 2], i32)>,
+    /// The game rules' camp list, as last seen: position and whether it is the Mid-Boss.
+    camp_sites: Vec<([f32; 3], bool)>,
     /// When each spawn's death was seen, by its place in `neutral_spawns`.
     neutral_deaths: Vec<Option<i32>>,
     /// Spawns still alive as far as is known, by entity index.
@@ -1023,6 +1217,14 @@ struct State {
     /// The tick the carried Urn last disappeared, and who had it, for telling a drop
     /// (a pickup appears where they fell) from a delivery (nothing appears).
     urn_released: Option<(i32, i32)>,
+    shops: Shops,
+    /// The tunnels' volumes, as world-space `(min, max)` corners. See [`TUNNEL_TRIGGER`].
+    tunnel_boxes: Vec<([f32; 3], [f32; 3])>,
+    /// Tunnel nodes by entity index: position, tunnel id, and the entities it links to.
+    tunnel_nodes: BTreeMap<i32, ([f32; 2], i64, Vec<i32>)>,
+    /// Healing Snacks and powerups there to take, by entity index: their life's place in
+    /// `snacks` or `powerups`.
+    pickup_open: BTreeMap<i32, usize>,
     /// Standing crates, statues and Sinner's Sacrifices, by entity index: which kind,
     /// and the life's place in that kind's list.
     breakable_open: BTreeMap<i32, (Breakable, usize)>,
@@ -1032,6 +1234,10 @@ struct State {
     game_start: Option<i32>,
     /// The game rules' clock fields as last seen: reading, server tick, paused.
     clock_fields: (f32, i64, bool),
+    /// The server tick, from the latest `net_Tick`.
+    server_tick: Option<i64>,
+    /// The demo file header's `build_num`.
+    build: u32,
     /// Clock anchors as `(tick, reading, paused)`.
     clock: Vec<(i32, f32, bool)>,
     /// Net worth and the evidence of where it came from.
@@ -1297,13 +1503,98 @@ impl State {
         self.clock_fields = now;
         // A new reading anchors the clock here; a pause or resume alone carries the last
         // anchor forward to this tick.
-        let reading = if now.1 != server_tick || self.clock.is_empty() {
+        let reading = if self.clock.is_empty() {
+            // The first reading may predate the recording: since the 2026-10 update replays
+            // start at 0:00 rather than 30 s before it, long after the -30 s reading was
+            // taken, so run it forward to now by the server tick.
+            match self.server_tick {
+                Some(st) if !now.2 && st > now.1 => now.0 + (st - now.1) as f32 * self.interval(),
+                _ => now.0,
+            }
+        } else if now.1 != server_tick {
             now.0
         } else {
             let &(t, reading, was_paused) = self.clock.last().unwrap();
             if was_paused { reading } else { reading + (tick - t) as f32 * self.interval() }
         };
         self.clock.push((tick, reading, now.2));
+    }
+
+    /// The game rules' list of neutral camps. It is set once, at the start, but read on
+    /// every update in case it ever grows.
+    fn on_camp_sites(&mut self, e: &Entity) {
+        let Some(n) = e.get_value::<u64>(&K_CAMP_ORIGINS) else {
+            return;
+        };
+        if n as usize == self.camp_sites.len() {
+            return;
+        }
+        self.camp_sites = (0..n)
+            .filter_map(|i| {
+                let at = e.get_value::<[f32; 3]>(&array_item(K_CAMP_ORIGINS, i))?;
+                let mid_boss = e.get_value::<bool>(&array_item(K_CAMP_IS_MID_BOSS, i)).unwrap_or(false);
+                Some((at, mid_boss))
+            })
+            .collect();
+    }
+
+    /// A Rift announced at `tick`, standing at `at` where known.
+    fn rift_announced(&mut self, tick: i32, at: Option<(f32, f32)>) {
+        let q = |v: f32| (v / POSITION_QUANT).round() as i32;
+        let rifts = &mut self.events.rifts;
+        rifts.t.push(tick);
+        rifts.open.push(-1);
+        rifts.x.push(at.map_or(0, |a| q(a.0)));
+        rifts.y.push(at.map_or(0, |a| q(a.1)));
+        rifts.contested.push(-1);
+        rifts.end.push(-1);
+        rifts.outcome.push("open");
+        rifts.team.push(-1);
+    }
+
+    /// Follows the Rift through the game rules: open, first stood on, over.
+    fn on_rift(&mut self, tick: i32, e: &Entity) {
+        let team = e.get_value::<i64>(&K_RIFT_TEAM);
+        // Where it is, while it is open: the place stays set for a moment after it is
+        // taken, with the scoring team already named.
+        let at = e
+            .get_value::<[f32; 3]>(&K_RIFT_AT)
+            .filter(|[x, y, _]| team == Some(-1) && x.abs() < 1e30 && (*x, *y) != (0.0, 0.0));
+        let current = |r: &Rifts| r.outcome.last() == Some(&"open") && r.end.last() == Some(&-1);
+        if let Some([x, y, _]) = at {
+            // Opened without a warning seen: the replay began in between.
+            if !current(&self.events.rifts) {
+                self.rift_announced(-1, None);
+            }
+            let rifts = &mut self.events.rifts;
+            let n = rifts.t.len() - 1;
+            if rifts.open[n] < 0 {
+                rifts.open[n] = tick;
+                rifts.x[n] = (x / POSITION_QUANT).round() as i32;
+                rifts.y[n] = (y / POSITION_QUANT).round() as i32;
+            }
+        }
+        let rifts = &mut self.events.rifts;
+        if !current(rifts) || rifts.open.last().is_some_and(|&t| t < 0) {
+            return;
+        }
+        let n = rifts.t.len() - 1;
+        let give_up = e.get_value::<f32>(&K_RIFT_GIVE_UP).unwrap_or(0.0);
+        if rifts.contested[n] < 0 && give_up > 0.0 && give_up < 1e30 {
+            rifts.contested[n] = tick;
+        }
+        match team {
+            Some(TEAM_NEUTRAL) => {
+                rifts.end[n] = tick;
+                rifts.outcome[n] = "released";
+            }
+            Some(team) if team > 0 => {
+                rifts.end[n] = tick;
+                rifts.outcome[n] = "captured";
+                rifts.team[n] = team as i32;
+            }
+            _ => {}
+        }
     }
 
     /// The tick the game clock read `game` seconds, if it ever did while running.
@@ -1362,16 +1653,65 @@ fn cause_of(ctx: &Context, index: i32) -> &'static str {
         .map_or("other", |&(_, kind)| kind)
 }
 
+/// The width of a position cell, in world units.
+const CELL_WIDTH: f32 = 512.0;
+/// Where cell 0 starts, as a distance below the world origin, on every axis. The cell
+/// grid doubled in the 2026-10 update: 64 cells a side before, so the Mid-Boss stood in
+/// cell 32; 128 since, putting it in cell 64. The positions they encode are the same.
+const CELL_ORIGIN_OLD: f32 = 16384.0;
+const CELL_ORIGIN: f32 = 32768.0;
+/// The first game build seen with the bigger grid (the demo file header's `build_num`);
+/// every replay before the update was 10854.
+const BUILD_BIG_CELL_GRID: u64 = 10932;
+/// `CDemoFileHeader.build_num`.
+const HEADER_BUILD: u32 = 13;
+
+thread_local! {
+    /// This replay's `CELL_ORIGIN*`, settled by its file header before any entity.
+    static CELL_ORIGIN_NOW: Cell<f32> = const { Cell::new(CELL_ORIGIN) };
+}
+
+/// The key of item `i` of the dynamic array keyed `array`: haste adds the index, hashed
+/// on its own, to the array's key.
+fn array_item(array: u64, i: u64) -> u64 {
+    haste::fxhash::add_u64_to_hash(array, haste::fxhash::add_u64_to_hash(0, i))
+}
+
+/// A neutral creep's tier, from its health at spawn. Health grows with the match but the
+/// tiers never meet: measured from 134 to 248 for the smallest, 355 to 619 for the
+/// middle and 1323 to 2179 for the biggest. Since the 2026-10 update each tier comes in
+/// several looks (subclasses), and a camp can mix tiers, so health is what tells them
+/// apart.
+fn creep_tier(max_hp: i64) -> i32 {
+    match max_hp {
+        ..=0 => 0,
+        1..=300 => 1,
+        301..=1000 => 2,
+        _ => 3,
+    }
+}
+
+/// Where an entity stands, on all three axes. A model has a skeleton; a trigger is a
+/// plain volume, whose origin sits on its scene node instead.
+fn position3(e: &Entity) -> Option<[f32; 3]> {
+    let axis = |i: usize| {
+        coord(e, SKELETON_CELL[i], SKELETON_VEC[i]).or_else(|| coord(e, SCENE_CELL[i], SCENE_VEC[i]))
+    };
+    Some([axis(0)?, axis(1)?, axis(2)?])
+}
+
 /// One axis of a position, from the cell it sits in and the offset within that cell.
 fn coord(e: &Entity, cell: u64, vec: u64) -> Option<f32> {
     let cell: u16 = e.get_value(&cell)?;
     let offset: f32 = e.get_value(&vec)?;
-    Some(deadlock_coord_from_cell(cell, offset))
+    Some(cell as f32 * CELL_WIDTH - CELL_ORIGIN_NOW.get() + offset)
 }
 
 /// A controller that stands for an actual player, rather than the broadcast slot.
 fn named(row: &Row) -> bool {
-    !row.name.is_empty() && row.name != "SourceTV"
+    // The replay recorder has a controller too, on the spectator team (1); its name
+    // changed from "SourceTV" to "DemoRecorder" in the 2026-10 update, so go by team.
+    !row.name.is_empty() && matches!(row.team, 2 | 3)
 }
 
 /// Closes out whatever creep life is open at `index`, if any, keeping it only if it was
@@ -1396,6 +1736,18 @@ fn finish_creep(st: &mut State, index: i32) {
 struct Collector(Rc<RefCell<State>>);
 
 impl Visitor for Collector {
+    fn on_cmd(&mut self, _ctx: &Context, header: &CmdHeader, data: &[u8]) -> anyhow::Result<()> {
+        if header.cmd == EDemoCommands::DemFileHeader {
+            let build = wire::varint(data, HEADER_BUILD);
+            self.0.borrow_mut().build = build.unwrap_or(0) as u32;
+            // A header without a build is taken to be the newest kind.
+            let build = build.unwrap_or(BUILD_BIG_CELL_GRID);
+            let origin = if build >= BUILD_BIG_CELL_GRID { CELL_ORIGIN } else { CELL_ORIGIN_OLD };
+            CELL_ORIGIN_NOW.set(origin);
+        }
+        Ok(())
+    }
+
     fn on_entity(&mut self, ctx: &Context, d: DeltaHeader, e: &Entity) -> anyhow::Result<()> {
         if e.serializer_name_heq(PAWN) {
             self.on_pawn(ctx, e);
@@ -1407,6 +1759,19 @@ impl Visitor for Collector {
         }
         if e.serializer_name_heq(TROOPER_NEUTRAL) {
             self.on_neutral(ctx, d, e);
+            return Ok(());
+        }
+        if e.serializer_name_heq(PICKUP_HEALTH) {
+            if e.get_value::<u64>(&K_SUBCLASS) == Some(SUBCLASS_SNACK) {
+                self.on_pickup(ctx, d, e, Pickup::Snack);
+            }
+            return Ok(());
+        }
+        if e.serializer_name_heq(PICKUP_MODIFIER) {
+            // Pooled: the same entity is reused for other pickups between drops, so one
+            // that turns into anything else is no longer a powerup on the map.
+            let kind = e.get_value::<u64>(&K_SUBCLASS).and_then(powerup_kind);
+            self.on_pickup(ctx, d, e, kind.map_or(Pickup::Other, Pickup::Powerup));
             return Ok(());
         }
         if e.serializer_name_heq(BREAKABLE) || e.serializer_name_heq(SINNER) {
@@ -1428,6 +1793,16 @@ impl Visitor for Collector {
                 st.game_start.get_or_insert(ctx.tick());
             }
             st.on_clock(ctx.tick(), e);
+            st.on_rift(ctx.tick(), e);
+            st.on_camp_sites(e);
+            return Ok(());
+        }
+        if e.serializer_name_heq(RIFT_SPAWNER) {
+            if d == DeltaHeader::CREATE {
+                let at = coord(e, TROOPER_CELL_X, TROOPER_VEC_X)
+                    .zip(coord(e, TROOPER_CELL_Y, TROOPER_VEC_Y));
+                self.0.borrow_mut().rift_announced(ctx.tick(), at);
+            }
             return Ok(());
         }
         if e.serializer_name_heq(URN) {
@@ -1440,6 +1815,25 @@ impl Visitor for Collector {
         }
         if e.serializer_name_heq(ZIPLINE_NODE) {
             self.on_zipline(e);
+            return Ok(());
+        }
+        if e.serializer_name_heq(ITEM_SHOP) {
+            if d == DeltaHeader::CREATE {
+                if let Some(at) = position3(e) {
+                    let mut st = self.0.borrow_mut();
+                    let q = |v: f32| (v / POSITION_QUANT).round() as i32;
+                    st.shops.x.push(q(at[0]));
+                    st.shops.y.push(q(at[1]));
+                    st.shops.z.push(q(at[2]));
+                    st.shops.team.push(e.get_value::<u64>(&K_TEAM).unwrap_or(0) as u32);
+                }
+            }
+            return Ok(());
+        }
+        if e.serializer_name_heq(TUNNEL_TRIGGER) || e.serializer_name_heq(TUNNEL_NODE) {
+            if d == DeltaHeader::CREATE {
+                self.on_tunnel(e);
+            }
             return Ok(());
         }
         if let Some(&(class, kind)) = OBJECTIVES.iter().find(|(c, _)| e.serializer_name_heq(*c)) {
@@ -1582,6 +1976,11 @@ impl Visitor for Collector {
             MSG_POST_MATCH => {
                 self.0.borrow_mut().income.summary = wire::bytes(data, 1).map(<[u8]>::to_vec)
             }
+            MSG_NET_TICK => {
+                if let Some(t) = wire::varint(data, 1) {
+                    self.0.borrow_mut().server_tick = Some(t as i64);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1639,8 +2038,9 @@ impl Collector {
                 (Some(x), Some(y)) => [x, y],
                 _ => return,
             };
+            let tier = creep_tier(e.get_value::<i64>(&K_MAX_HP).unwrap_or(0));
             let n = st.neutral_spawns.len();
-            st.neutral_spawns.push((tick, at));
+            st.neutral_spawns.push((tick, at, tier));
             st.neutral_deaths.push(None);
             st.neutral_open.insert(e.index(), n);
             return;
@@ -1742,6 +2142,53 @@ impl Collector {
         list.by.push(-1);
         st.breakable_open.insert(e.index(), (kind, n));
         st.sinner_hit.remove(&e.index());
+    }
+
+    /// A Healing Snack or powerup appearing, or being taken. Neither entity goes away:
+    /// `m_bActive` flips off when it is taken and on again when one is there to take.
+    fn on_pickup(&self, ctx: &Context, d: DeltaHeader, e: &Entity, pickup: Pickup) {
+        let tick = ctx.tick();
+        let mut st = self.0.borrow_mut();
+        let active = d != DeltaHeader::DELETE
+            && pickup != Pickup::Other
+            && e.get_value::<bool>(&K_PICKUP_ACTIVE).unwrap_or(false);
+        let open = st.pickup_open.get(&e.index()).copied();
+        match (active, open) {
+            (true, None) => {
+                let (Some(x), Some(y)) = (
+                    coord(e, TROOPER_CELL_X, TROOPER_VEC_X),
+                    coord(e, TROOPER_CELL_Y, TROOPER_VEC_Y),
+                ) else {
+                    return;
+                };
+                let list = match pickup {
+                    Pickup::Powerup(kind) => {
+                        st.events.powerups.kind.push(kind);
+                        &mut st.events.powerups.lives
+                    }
+                    _ => &mut st.events.snacks,
+                };
+                let n = list.t.len();
+                list.t.push(tick);
+                list.x.push((x / POSITION_QUANT).round() as i32);
+                list.y.push((y / POSITION_QUANT).round() as i32);
+                list.broken.push(-1);
+                list.by.push(-1);
+                st.pickup_open.insert(e.index(), n);
+            }
+            (false, Some(n)) => {
+                st.pickup_open.remove(&e.index());
+                // An entity that just turned into something else was a powerup.
+                let powerup = !matches!(pickup, Pickup::Snack);
+                let list = if powerup { &st.events.powerups.lives } else { &st.events.snacks };
+                let at = [list.x[n] as f32 * POSITION_QUANT, list.y[n] as f32 * POSITION_QUANT];
+                let by = st.nearest_player(at, PICKUP_CREDIT_RANGE);
+                let list = if powerup { &mut st.events.powerups.lives } else { &mut st.events.snacks };
+                list.broken[n] = tick;
+                list.by[n] = by;
+            }
+            _ => {}
+        }
     }
 
     /// A crate or Sinner's Sacrifice breaking, and who to credit. Debris for anything
@@ -2113,7 +2560,72 @@ impl Collector {
     }
 }
 
+/// A lane's nodes in rope order. Nodes numbered by `m_iNodeIndex` go by it; since the
+/// 2026-10 update a rope also has as many again unnumbered (-1) nodes between those, and
+/// each of these goes where it projects onto the numbered rope: on its nearest segment,
+/// and along it.
+fn rope_order(nodes: Vec<&ZiplineTrack>) -> Vec<&ZiplineTrack> {
+    let (mut numbered, loose): (Vec<_>, Vec<_>) = nodes.into_iter().partition(|n| n.node >= 0);
+    numbered.sort_by_key(|n| n.node);
+    if numbered.len() < 2 {
+        numbered.extend(loose);
+        return numbered;
+    }
+    let at = |n: &ZiplineTrack| n.at.unwrap_or_default();
+    // (segment, fraction along it) for every node; a numbered node starts its segment.
+    let mut keyed: Vec<((usize, f32), &ZiplineTrack)> =
+        numbered.iter().enumerate().map(|(i, &n)| ((i, 0.0), n)).collect();
+    for n in loose {
+        let [px, py] = at(n);
+        let mut best = (f32::MAX, (0, 0.0));
+        for (i, w) in numbered.windows(2).enumerate() {
+            let ([ax, ay], [bx, by]) = (at(w[0]), at(w[1]));
+            let (dx, dy) = (bx - ax, by - ay);
+            let len = dx * dx + dy * dy;
+            let t = if len > 0.0 { (((px - ax) * dx + (py - ay) * dy) / len).clamp(0.0, 1.0) } else { 0.0 };
+            let (qx, qy) = (ax + t * dx - px, ay + t * dy - py);
+            let d = qx * qx + qy * qy;
+            if d < best.0 {
+                // Strictly inside, so it never ties a numbered node's own (i, 0.0).
+                best = (d, (i, t.clamp(1e-4, 1.0 - 1e-4)));
+            }
+        }
+        keyed.push((best.1, n));
+    }
+    keyed.sort_by(|a, b| a.0 .0.cmp(&b.0 .0).then(a.0 .1.total_cmp(&b.0 .1)));
+    keyed.into_iter().map(|(_, n)| n).collect()
+}
+
 impl Collector {
+    /// A tunnel's volume or one of its nodes. Both are placed once, at the start, and
+    /// never change.
+    fn on_tunnel(&self, e: &Entity) {
+        let Some([x, y, z]) = position3(e) else {
+            return;
+        };
+        let mut st = self.0.borrow_mut();
+        if e.serializer_name_heq(TUNNEL_TRIGGER) {
+            if let (Some(min), Some(max)) =
+                (e.get_value::<[f32; 3]>(&K_BOX_MINS), e.get_value::<[f32; 3]>(&K_BOX_MAXS))
+            {
+                let at = [x, y, z];
+                st.tunnel_boxes.push((
+                    std::array::from_fn(|i| at[i] + min[i]),
+                    std::array::from_fn(|i| at[i] + max[i]),
+                ));
+            }
+            return;
+        }
+        let links = K_TUNNEL_LINKS
+            .iter()
+            .filter_map(|k| e.get_value::<u32>(k))
+            .filter(|&h| is_ehandle_valid(h))
+            .map(ehandle_to_index)
+            .collect();
+        let id = e.get_value::<i64>(&K_TUNNEL_ID).unwrap_or(0);
+        st.tunnel_nodes.insert(e.index(), ([x, y], id, links));
+    }
+
     /// Records one zipline node's owner whenever it changes. Everything else about a
     /// node is fixed, so it is read until it resolves and then left alone.
     fn on_zipline(&self, e: &Entity) {
@@ -2310,7 +2822,49 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         positions.hp.push(take(|t| &t.hp));
         positions.max_hp.push(take(|t| &t.max_hp));
         positions.yaw.push(take(|t| &t.yaw));
+        let n = positions.x.len() - 1;
+        let at = |f: usize, c: &Vec<Vec<i32>>| c[n][f] as f32 * POSITION_QUANT;
+        let mut runs = vec![];
+        let mut start = None;
+        for f in 0..position_frames {
+            let p = [at(f, &positions.x), at(f, &positions.y), at(f, &positions.z)];
+            let alive = positions.hp[n][f] > 0;
+            let inside = alive
+                && st.tunnel_boxes.iter().any(|(lo, hi)| (0..3).all(|i| lo[i] <= p[i] && p[i] <= hi[i]));
+            match (inside, start) {
+                // Back in within a moment: the seam between two boxes, not a way out.
+                (true, None) if runs.last().is_some_and(|&end| f as i32 - end <= TUNNEL_SEAM_FRAMES) => {
+                    // Reopen the last run: drop its end, take its start back.
+                    runs.pop();
+                    start = runs.pop().map(|s| s as usize);
+                }
+                (true, None) => start = Some(f),
+                (false, Some(s)) => {
+                    runs.extend([s as i32, f as i32]);
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = start {
+            runs.extend([s as i32, position_frames as i32]);
+        }
+        positions.tunnel.push(runs);
     }
+    let quant = |v: f32| (v / POSITION_QUANT).round() as i32;
+    let tunnels = Tunnels {
+        quant: POSITION_QUANT,
+        lines: st
+            .tunnel_nodes
+            .values()
+            .filter(|(_, id, _)| *id != TUNNEL_ID_TELEPORT)
+            .flat_map(|(a, _, links)| {
+                links.iter().filter_map(|j| st.tunnel_nodes.get(j)).map(move |(b, _, _)| {
+                    [quant(a[0]), quant(a[1]), quant(b[0]), quant(b[1])]
+                })
+            })
+            .collect(),
+    };
 
     // Whatever creeps the match ended with never got a DELETE, or a further CREATE, to
     // close their life out -- the demo just stops -- so they are flushed here the same
@@ -2355,8 +2909,8 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         quant: POSITION_QUANT,
         list: by_lane
             .into_iter()
-            .map(|(lane, mut nodes)| {
-                nodes.sort_by_key(|n| n.node);
+            .map(|(lane, nodes)| {
+                let nodes = rope_order(nodes);
                 let mut changes: Vec<[i32; 3]> = nodes
                     .iter()
                     .enumerate()
@@ -2390,12 +2944,19 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
     {
         *t -= start;
     }
-    for (n, &(tick, at)) in st.neutral_spawns.iter().enumerate() {
+    for (n, &(tick, at, tier)) in st.neutral_spawns.iter().enumerate() {
         let neutrals = &mut events.neutrals;
         neutrals.t.push(tick - start);
         neutrals.x.push((at[0] / POSITION_QUANT).round() as i32);
         neutrals.y.push((at[1] / POSITION_QUANT).round() as i32);
         neutrals.died.push(st.neutral_deaths[n].map_or(-1, |t| t - start));
+        neutrals.tier.push(tier);
+    }
+    for &([x, y, _], mid_boss) in &st.camp_sites {
+        if !mid_boss {
+            events.camps.x.push((x / POSITION_QUANT).round() as i32);
+            events.camps.y.push((y / POSITION_QUANT).round() as i32);
+        }
     }
     for t in events
         .urn
@@ -2405,15 +2966,24 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         .chain(events.crates.t.iter_mut())
         .chain(events.sinners.t.iter_mut())
         .chain(events.statues.t.iter_mut())
+        .chain(events.snacks.t.iter_mut())
+        .chain(events.powerups.lives.t.iter_mut())
     {
         *t -= start;
     }
+    let rifts = &mut events.rifts;
     for t in events
         .crates
         .broken
         .iter_mut()
         .chain(events.sinners.broken.iter_mut())
         .chain(events.statues.broken.iter_mut())
+        .chain(events.snacks.broken.iter_mut())
+        .chain(events.powerups.lives.broken.iter_mut())
+        .chain(rifts.t.iter_mut())
+        .chain(rifts.open.iter_mut())
+        .chain(rifts.contested.iter_mut())
+        .chain(rifts.end.iter_mut())
     {
         if *t >= 0 {
             *t -= start;
@@ -2458,6 +3028,7 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         },
     );
     let timeline = Timeline {
+        build: st.build,
         clock_start,
         clock,
         sample_seconds: SAMPLE_SECONDS,
@@ -2473,6 +3044,8 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         },
         objectives,
         lanes,
+        tunnels,
+        shops: std::mem::take(&mut st.shops),
         events,
         income,
     };

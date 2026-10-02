@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { killMarks } from '../demo/events'
+import { killMarks, riftMarks } from '../demo/events'
 import { AMBER, SAPPHIRE, type Timeline } from '../demo/types'
 import { gameClock, SPEEDS, type Speed } from '../demo/usePlayback'
 
@@ -45,6 +45,7 @@ export function PlaybackBar({
 }) {
   const last = timeline.frames - 1
   const marks = useMemo(() => killMarks(timeline), [timeline])
+  const rifts = useMemo(() => riftMarks(timeline), [timeline])
   const fraction = (seconds: number) => Math.min(seconds / Math.max(timeline.duration, 1), 1)
 
   return (
@@ -65,6 +66,25 @@ export function PlaybackBar({
                       ? 'var(--data-team-amber)'
                       : 'var(--data-neutral)',
                 opacity: 0.85,
+              }}
+            />
+          ))}
+          {/* Each Rift taken, above the kills: a diamond in the taker's colour, edged in
+              the Rift's violet -- all violet when its souls spilled for anyone. */}
+          {rifts.map((rift, i) => (
+            <span
+              key={`rift${i}`}
+              className="absolute h-2 w-2 -translate-x-1/2 rotate-45 border"
+              style={{
+                left: `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${fraction(rift.seconds)})`,
+                top: -14,
+                borderColor: 'var(--data-rift)',
+                background:
+                  rift.team === AMBER
+                    ? 'var(--data-team-amber)'
+                    : rift.team === SAPPHIRE
+                      ? 'var(--data-team-sapphire)'
+                      : 'var(--data-rift)',
               }}
             />
           ))}

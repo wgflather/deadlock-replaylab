@@ -1,4 +1,10 @@
 import minimapUrl from '../assets/map/minimap.webp'
+import legacyMinimapUrl from '../assets/map/minimap-legacy.webp'
+import undergroundUrl from '../assets/map/minimap-underground.webp'
+import tunnelsUrl from '../assets/map/minimap-tunnels.webp'
+import legacyUndergroundUrl from '../assets/map/minimap-legacy-underground.webp'
+import type { Below } from './below'
+import { isCurrentMap } from './version'
 import { MAP_RADIUS } from './manifest'
 
 export { MAP_RADIUS }
@@ -29,12 +35,42 @@ export { MAP_RADIUS }
  * instead of ground meeting it. Only that outer boundary is soft -- the lines between a
  * block and the street beside it are untouched, so the map still reads at a glance.
  *
- * To redo it from a newer version of the layer: take the alpha channel as the shape, ramp
- * it from #5a615a at 110 to #202420 at 205, drop everything under 40, blur a copy of the
- * 0/255 "is this the city at all" mask by 4px and multiply the ramped alpha by it, then
- * pad by MAP_IMAGE_MARGIN.
+ * scripts/gen-minimap-image.py does all of this from the layer as the game ships it:
+ * take the alpha channel as the shape, ramp it from #5a615a at 110 to #202420 at 205,
+ * drop everything under 40, blur a copy of the 0/255 "is this the city at all" mask by
+ * 4px and use it as the alpha, then pad by MAP_IMAGE_MARGIN.
+ *
+ * The map was rebuilt in the 2026-10 update (build 10932), so there are two: the current
+ * one, from the layer minimap_midtown_mid, and the one before, kept for older replays.
+ * Both span the same bounds, so positions land the same way on either.
  */
 export const MINIMAP = minimapUrl
+
+/** The map before the 2026-10 update. */
+export const LEGACY_MINIMAP = legacyMinimapUrl
+
+export { CURRENT_MAP_BUILD, isCurrentMap } from './version'
+
+/**
+ * The two below-ground backgrounds of the current map, as the game's minimap swaps to
+ * them: the rock in the block tone, the walkable rooms and passages in the street tone.
+ * Same bounds and padding as the street art. See scripts/gen-minimap-image.py.
+ */
+export const BELOW_GROUND_MINIMAP: Record<Below, string> = {
+  underground: undergroundUrl,
+  tunnels: tunnelsUrl,
+}
+
+/** The below-ground backgrounds there are for a match played on `build`. The map before
+ * the 2026-10 update has its rooms under the middle, but no tunnels art. */
+export function belowGroundFor(build: number): Partial<Record<Below, string>> {
+  return isCurrentMap(build) ? BELOW_GROUND_MINIMAP : { underground: legacyUndergroundUrl }
+}
+
+/** The map art for a match played on `build` (0 where unknown: taken to be current). */
+export function minimapFor(build: number): string {
+  return isCurrentMap(build) ? MINIMAP : LEGACY_MINIMAP
+}
 
 /**
  * How far past the playable radius the image reaches.

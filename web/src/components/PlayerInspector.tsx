@@ -1,12 +1,16 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { sourceOf } from '../abilities'
 import {
+  DAMAGE_TYPES,
   damageIndex,
   damageSummary,
+  type DamageType,
+  type Group,
   type Hit,
   type Party,
   type Share,
   type Side,
+  type TypeSplit as Split,
 } from '../demo/damage'
 import { KIND_LABELS } from '../demo/kinds'
 import type { Row, Timeline } from '../demo/types'
@@ -34,8 +38,8 @@ const WINDOWS = [
   ['Match', Infinity],
 ] as const
 
-/** Rows per breakdown before the rest are folded into a count. */
-const TOP = 4
+/** Rows per breakdown before the rest are folded behind "Show all". */
+const TOP = 5
 
 /**
  * The summary is recomputed at most this many times per match second of playhead
@@ -45,6 +49,14 @@ const TOP = 4
 const STEPS_PER_SECOND = 4
 
 const TABS = ['Damage', 'Items', 'Souls', 'Map'] as const
+
+/** The kinds of damage, in the game's words and the shop's hues for gun and spirit. */
+const TYPE_STYLES: Record<DamageType, { label: string; color: string }> = {
+  gun: { label: 'Gun', color: 'var(--data-item-weapon)' },
+  spirit: { label: 'Spirit', color: 'var(--data-item-spirit)' },
+  melee: { label: 'Melee', color: 'var(--data-melee)' },
+  other: { label: 'Other', color: 'var(--ui-faint)' },
+}
 
 export function PlayerInspector({
   timeline,
@@ -125,9 +137,15 @@ function DamageTab({ timeline, player, at }: { timeline: Timeline; player: numbe
     [timeline, index, player, step, span],
   )
 
+  // Three sections -- what they dealt, what they took, the hits themselves -- each ruled
+  // off from the next, under the span they all share.
   return (
-    <div className="space-y-4 px-3 py-3">
-      <div role="group" aria-label="Time span" className="flex items-center gap-1">
+    <div>
+      <div
+        role="group"
+        aria-label="Time span"
+        className="border-ui-line flex items-center gap-1 border-b px-3 py-2"
+      >
         <span className="text-ui-muted mr-1 text-[0.75rem]">Last</span>
         {WINDOWS.map(([label, seconds]) => (
           <button
@@ -144,104 +162,347 @@ function DamageTab({ timeline, player, at }: { timeline: Timeline; player: numbe
         ))}
       </div>
 
-      <SideBlock title="Dealt" partyTitle="To" side={summary.dealt} timeline={timeline} />
-      <SideBlock title="Taken" partyTitle="From" side={summary.taken} timeline={timeline} />
+      <SideSection
+        title="Dealt"
+        direction="To"
+        side={summary.dealt}
+        timeline={timeline}
+        empty="Nothing dealt in this span."
+      />
+      <SideSection
+        title="Taken"
+        direction="From"
+        side={summary.taken}
+        timeline={timeline}
+        empty="Nothing taken in this span."
+      />
 
-      <div>
-        <h4 className="fact-label mb-1.5">Recent hits</h4>
+      <section aria-label="Recent hits" className="px-3 py-3">
+        <h4 className="section-title mb-2">Recent hits</h4>
         {summary.recent.length === 0 ? (
           <p className="text-ui-muted text-[0.75rem]">No hits in this span.</p>
         ) : (
-          <ol className="space-y-0.5">
-            {summary.recent.map((hit) => (
-              <HitRow key={hit.id} hit={hit} timeline={timeline} />
-            ))}
-          </ol>
+          <>
+            <div aria-hidden="true" className="mb-1 flex items-center gap-1.5">
+              <span className="fact-label w-9 shrink-0">Time</span>
+              <span className="w-3 shrink-0" />
+              <span className="fact-label flex-1">Player</span>
+              <span className="fact-label w-[40%]">Source</span>
+              <span className="fact-label w-10 shrink-0 text-right">Damage</span>
+            </div>
+            <ol className="space-y-0.5">
+              {summary.recent.map((hit) => (
+                <HitRow key={hit.id} hit={hit} timeline={timeline} />
+              ))}
+            </ol>
+          </>
         )}
-      </div>
+      </section>
     </div>
   )
 }
 
-function SideBlock({
+/** One direction of the player's damage: its total, what kind of damage it was, and who
+ * and what it was between. */
+function SideSection({
   title,
-  partyTitle,
+  direction,
   side,
   timeline,
+  empty,
 }: {
   title: string
-  partyTitle: string
+  /** "To" or "From": how the other side of each hit is named. */
+  direction: string
   side: Side
+  timeline: Timeline
+  empty: string
+}) {
+  const [by, setBy] = useState<'party' | 'source'>('party')
+  const [all, setAll] = useState(false)
+  // Open rows by key, kept across playhead steps so a row does not fold shut while the
+  // replay runs; a key that drops out of the span simply has nothing to open.
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (key: string) =>
+    setOpen((was) => {
+      const next = new Set(was)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+  const count = by === 'party' ? side.byParty.length : side.bySource.length
+  const limit = all ? undefined : TOP
+  const partyTitle = direction === 'To' ? 'Target' : 'Attacker'
+
+  return (
+    <section aria-label={title} className="border-ui-line border-b px-3 py-3">
+      <header className="mb-2.5 flex items-baseline gap-2">
+        <h4 className="section-title">{title}</h4>
+        <span className="text-ui-fg ml-auto text-[1.125rem] leading-none font-semibold tabular-nums">
+          {compact(side.total)}
+        </span>
+        <span className="text-ui-muted text-[0.75rem] tabular-nums">
+          {side.hits} {side.hits === 1 ? 'hit' : 'hits'}
+        </span>
+      </header>
+      {side.hits === 0 ? (
+        <p className="text-ui-muted text-[0.75rem]">{empty}</p>
+      ) : (
+        <>
+          <KindTable direction={direction} side={side} />
+          <div className="mt-3 mb-1 flex items-center gap-1 pr-1">
+            <span className="text-ui-muted mr-1 text-[0.75rem]">By</span>
+            {(
+              [
+                ['party', partyTitle],
+                ['source', 'Source'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={by === value}
+                onClick={() => setBy(value)}
+                className={`rounded-[4px] px-2 py-0.5 text-[0.75rem] transition-colors ${
+                  by === value ? 'bg-ui-raised text-ui-fg' : 'text-ui-muted hover:text-ui-fg'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+            <span aria-hidden="true" className="fact-label ml-auto w-10 text-right">
+              Dmg
+            </span>
+            <span aria-hidden="true" className="fact-label ml-1.5 w-6 text-right">
+              Hits
+            </span>
+          </div>
+          <ul className="space-y-0.5">
+            {by === 'party'
+              ? side.byParty.slice(0, limit).map((group) => (
+                  <GroupRow
+                    key={group.key}
+                    group={group}
+                    total={side.total}
+                    open={open.has(group.key)}
+                    onToggle={() => toggle(group.key)}
+                    timeline={timeline}
+                  />
+                ))
+              : side.bySource.slice(0, limit).map((group) => (
+                  <li key={group.key} className="relative flex items-center gap-1.5 py-0.5 pr-1">
+                    <ShareBar share={group} of={side.total} />
+                    <ShareCells share={group}>
+                      <SourceLabel source={group.of} timeline={timeline} />
+                      <Faces parties={group.parts} timeline={timeline} />
+                    </ShareCells>
+                  </li>
+                ))}
+          </ul>
+          {count > TOP && (
+            <button
+              type="button"
+              onClick={() => setAll(!all)}
+              className="text-ui-muted hover:text-ui-fg mt-1 text-[0.6875rem] transition-colors"
+            >
+              {all ? 'Show fewer' : `Show all ${count}`}
+            </button>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+/** The three kinds of damage the percentages are given for; "other" only shows in a bar. */
+const KINDS = ['gun', 'spirit', 'melee'] as const
+
+/**
+ * What kind of damage a side was, as a small table: one row for heroes and one for
+ * creeps and objectives, so farming never dilutes the fight numbers. Each row's shares are
+ * of its own total, with a stacked bar under it to read at a glance.
+ */
+function KindTable({ direction, side }: { direction: string; side: Side }) {
+  const rows = [
+    { key: 'heroes', label: `${direction} heroes`, split: side.heroes },
+    { key: 'world', label: `${direction} creeps & objectives`, split: side.world },
+  ].filter((row) => row.split.total > 0)
+  return (
+    <div className="grid grid-cols-[1fr_repeat(3,2.5rem)_3rem] items-baseline gap-x-1.5 text-[0.75rem]">
+      <span />
+      {KINDS.map((kind) => (
+        <span key={kind} className="fact-label flex items-center justify-end gap-1">
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 rounded-[2px]"
+            style={{ background: TYPE_STYLES[kind].color }}
+          />
+          {TYPE_STYLES[kind].label}
+        </span>
+      ))}
+      <span className="fact-label text-right">Total</span>
+
+      {rows.map(({ key, label, split }) => (
+        <KindRow key={key} label={label} split={split} />
+      ))}
+    </div>
+  )
+}
+
+function KindRow({ label, split }: { label: string; split: Split }) {
+  const percent = (type: DamageType) => (split.byType[type] / split.total) * 100
+  return (
+    <>
+      <span className="text-ui-muted mt-1.5 truncate" title={label}>
+        {label}
+      </span>
+      {KINDS.map((kind) => (
+        <span
+          key={kind}
+          className={`mt-1.5 text-right tabular-nums ${
+            split.byType[kind] > 0 ? 'text-ui-fg' : 'text-ui-faint'
+          }`}
+        >
+          {split.byType[kind] > 0 ? `${Math.round(percent(kind))}%` : '–'}
+        </span>
+      ))}
+      <span className="text-ui-fg mt-1.5 text-right font-medium tabular-nums">
+        {compact(split.total)}
+      </span>
+      {/* Hits that name no source -- a trooper's, a tower's -- are the faint part. */}
+      <div
+        aria-hidden="true"
+        className="bg-ui-raised col-span-full mt-1 flex h-1 overflow-hidden rounded-full"
+      >
+        {DAMAGE_TYPES.map((type) => (
+          <span
+            key={type}
+            style={{ width: `${percent(type)}%`, background: TYPE_STYLES[type].color }}
+          />
+        ))}
+      </div>
+    </>
+  )
+}
+
+/** A target or attacker that opens onto the sources the damage between them came from. */
+function GroupRow({
+  group,
+  total,
+  open,
+  onToggle,
+  timeline,
+}: {
+  group: Group<Party, number>
+  /** The side's total, which the row's bar is a share of. */
+  total: number
+  open: boolean
+  onToggle: () => void
   timeline: Timeline
 }) {
   return (
-    <div>
-      <p className="mb-2 flex items-baseline gap-2">
-        <span className="text-ui-muted w-12 text-[0.8125rem]">{title}</span>
-        <span className="text-ui-fg text-[1.125rem] leading-none font-semibold">
-          {compact(side.total)}
+    <li>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="hover:bg-ui-raised/50 relative flex w-full items-center gap-1.5 rounded-[3px] py-0.5 pr-1 text-left"
+      >
+        <ShareBar share={group} of={total} />
+        <span
+          aria-hidden="true"
+          className={`text-ui-faint relative w-2.5 shrink-0 text-[0.625rem] transition-transform ${
+            open ? 'rotate-90' : ''
+          }`}
+        >
+          ▸
         </span>
-        <span className="text-ui-muted text-[0.75rem]">
-          {side.hits} {side.hits === 1 ? 'hit' : 'hits'}
-        </span>
-      </p>
-      {side.hits > 0 && (
-        <div className="grid grid-cols-2 gap-3">
-          <Breakdown
-            title={partyTitle}
-            shares={side.byParty}
-            total={side.total}
-            label={(party) => <PartyLabel party={party} timeline={timeline} />}
-          />
-          <Breakdown
-            title="With"
-            shares={side.bySource}
-            total={side.total}
-            label={(source) => <SourceLabel source={source} timeline={timeline} />}
-          />
-        </div>
+        <ShareCells share={group}>
+          <PartyLabel party={group.of} timeline={timeline} />
+        </ShareCells>
+      </button>
+      {/* Its parts, each a share of this row rather than of the side. */}
+      {open && (
+        <ul className="border-ui-line mt-0.5 mb-1 ml-[5px] space-y-0.5 border-l pl-2.5">
+          {group.parts.map((part) => (
+            <li key={part.key} className="relative flex items-center gap-1.5 py-0.5 pr-1">
+              <ShareBar share={part} of={group.amount} />
+              <ShareCells share={part}>
+                <SourceLabel source={part.of} timeline={timeline} />
+              </ShareCells>
+            </li>
+          ))}
+        </ul>
       )}
-    </div>
+    </li>
   )
 }
 
-function Breakdown<T>({
-  title,
-  shares,
-  total,
-  label,
-}: {
-  title: string
-  shares: Share<T>[]
-  total: number
-  label: (of: T) => ReactNode
-}) {
-  const shown = shares.slice(0, TOP)
-  const rest = shares.length - shown.length
+/** Most parties a source row names before folding the rest into a count. */
+const FACES = 3
+
+/** Who a source's damage was between, after its name: a hero as their face, anything else
+ * -- a Walker's laser, a trooper's rifle -- by its kind. Almost always one for damage
+ * taken; often several for an ability that hit a crowd. */
+function Faces({ parties, timeline }: { parties: Share<Party>[]; timeline: Timeline }) {
+  const rest = parties.length - FACES
+  const name = ({ of }: Share<Party>) =>
+    of.player >= 0 ? timeline.players[of.player]?.name : KIND_LABELS[of.kind]
   return (
-    <div className="min-w-0">
-      <h4 className="fact-label mb-1">{title}</h4>
-      <ul className="space-y-0.5">
-        {shown.map((share) => (
-          <li key={share.key} className="relative flex items-center gap-1.5 py-0.5 pr-1">
-            {/* The share of the side's total, as a bar behind the row. Neutral: it is a
-                proportion, and the rows it sits behind already say what of. */}
-            <span
-              aria-hidden="true"
-              className="bg-ui-raised absolute inset-y-0 left-0 rounded-[3px]"
-              style={{ width: `${total > 0 ? (share.amount / total) * 100 : 0}%` }}
-            />
-            <span className="relative flex min-w-0 flex-1 items-center gap-1.5">
-              {label(share.of)}
-            </span>
-            <span className="text-ui-fg relative text-[0.75rem] tabular-nums">
-              {compact(share.amount)}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {rest > 0 && <p className="text-ui-muted mt-0.5 text-[0.6875rem]">+{rest} more</p>}
-    </div>
+    <span
+      className="ml-auto flex min-w-0 shrink-0 items-center gap-0.5 pl-1"
+      title={parties.map(name).join(', ')}
+    >
+      {parties.slice(0, FACES).map((party) =>
+        party.of.player >= 0 ? (
+          <HeroFace key={party.key} player={timeline.players[party.of.player]} size={16} />
+        ) : (
+          <span
+            key={party.key}
+            className="bg-ui-bg border-ui-line text-ui-muted rounded-[3px] border px-1 text-[0.625rem] leading-[14px]"
+          >
+            {KIND_LABELS[party.of.kind]}
+          </span>
+        ),
+      )}
+      {rest > 0 && <span className="text-ui-muted text-[0.6875rem]">+{rest}</span>}
+    </span>
+  )
+}
+
+function ShareCells<T>({ share, children }: { share: Share<T>; children: ReactNode }) {
+  return (
+    <>
+      <span className="relative flex min-w-0 flex-1 items-center gap-1.5">{children}</span>
+      <span className="text-ui-fg relative w-10 text-right text-[0.75rem] tabular-nums">
+        {compact(share.amount)}
+      </span>
+      <span className="text-ui-muted relative w-6 text-right text-[0.75rem] tabular-nums">
+        {share.hits}
+      </span>
+    </>
+  )
+}
+
+/** A share of `of`, as a bar behind its row, with a thin strip along its foot splitting it
+ * by kind of damage in the kind table's colours. */
+function ShareBar<T>({ share, of }: { share: Share<T>; of: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="bg-ui-raised absolute inset-y-0 left-0 flex items-end overflow-hidden rounded-[3px]"
+      style={{ width: `${of > 0 ? (share.amount / of) * 100 : 0}%` }}
+    >
+      {DAMAGE_TYPES.map((type) => (
+        <span
+          key={type}
+          className="h-0.5"
+          style={{
+            width: `${(share.byType[type] / share.amount) * 100}%`,
+            background: TYPE_STYLES[type].color,
+          }}
+        />
+      ))}
+    </span>
   )
 }
 
@@ -293,7 +554,7 @@ function HitRow({ hit, timeline }: { hit: Hit; timeline: Timeline }) {
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
         <PartyLabel party={hit.other} timeline={timeline} />
       </span>
-      <span className="flex min-w-0 max-w-[40%] items-center gap-1.5">
+      <span className="flex w-[40%] min-w-0 items-center gap-1.5">
         <SourceLabel source={hit.source} timeline={timeline} />
       </span>
       {/* Damage taken is the one amount drawn in the damage colour: it is what hurt. */}

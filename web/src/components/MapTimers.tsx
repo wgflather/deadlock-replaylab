@@ -1,12 +1,20 @@
 import type { ReactNode } from 'react'
 import {
   midBossAt,
+  riftAt,
   urnAt,
   type BreakableSpot,
   type CampState,
+  type PowerupSpot,
 } from '../demo/mapState'
-import type { Timeline } from '../demo/types'
+import { AMBER, SAPPHIRE, TEAM_SHORT_NAMES, type PowerupKind, type Timeline } from '../demo/types'
 import { clock, gameClock } from '../demo/usePlayback'
+import midBoss from '../assets/map/midboss.png'
+import riftIcon from '../assets/map/unstable-rift.png'
+import powerupGun from '../assets/map/powerup-gun.svg'
+import powerupSurvival from '../assets/map/powerup-survival.svg'
+import powerupCasting from '../assets/map/powerup-casting.svg'
+import powerupMovement from '../assets/map/powerup-movement.svg'
 import dropoffEnemy from '../assets/map/urn-dropoff-enemy.webp'
 import dropoffTeam from '../assets/map/urn-dropoff-team.webp'
 import urnPickup from '../assets/map/urn-pickup.webp'
@@ -14,7 +22,7 @@ import { HeroFace } from './HeroIcon'
 
 /**
  * The map's timers, as a compact two-column grid over the map: the Mid-Boss, the Urn,
- * and each tier of neutral camp -- whether it is up, and how long until the next thing
+ * the Unstable Rift and each tier of neutral camp -- whether it is up, and how long until the next thing
  * happens. Each cell's name is in its tooltip.
  *
  * The replay is recorded, so "next" is what did happen next, counted down from the
@@ -42,6 +50,21 @@ export function UrnGlyph({ size = 14 }: { size?: number }) {
       draggable={false}
       className="shrink-0"
       style={{ height: size, width: 'auto' }}
+    />
+  )
+}
+
+/** The Mid-Boss: the minimap's own picture, as the map draws it. The picture carries a
+ * wide glow margin, so it is drawn larger than the slot and allowed to spill into it
+ * rather than shrinking the figure to a speck. Faded while down, as on the map. */
+function MidBossGlyph({ up, size = 20 }: { up: boolean; size?: number }) {
+  return (
+    <img
+      src={midBoss}
+      alt=""
+      draggable={false}
+      className="-my-1 shrink-0 select-none"
+      style={{ height: size, width: size, opacity: up ? 1 : 0.35 }}
     />
   )
 }
@@ -146,6 +169,29 @@ export function CrateGlyph({ size = 6 }: { size?: number }) {
   )
 }
 
+/** The Unstable Rift: the game's own icon, a dark tear edged in teal. Taller than wide,
+ * so `size` is its height. Faded until it opens. Shared with the map. */
+export function RiftGlyph({ size = 14, faded = false }: { size?: number; faded?: boolean }) {
+  return (
+    <img
+      src={riftIcon}
+      alt=""
+      draggable={false}
+      className="shrink-0 select-none"
+      style={{ height: size, width: 'auto', opacity: faded ? 0.5 : 1 }}
+    />
+  )
+}
+
+/** A team's name in its colour. */
+function Team({ team }: { team: number }) {
+  return (
+    <span className={team === AMBER ? 'text-data-amber' : 'text-data-sapphire'}>
+      {TEAM_SHORT_NAMES[team]}
+    </span>
+  )
+}
+
 /** A Golden Statue: a small bust on a plinth, in gold. */
 export function StatueGlyph({ size = 12 }: { size?: number }) {
   return (
@@ -161,6 +207,61 @@ export function StatueGlyph({ size = 12 }: { size?: number }) {
         strokeWidth={1}
         strokeLinejoin="round"
         style={{ fill: 'var(--data-statue)', stroke: 'var(--data-marker-shadow)' }}
+      />
+    </svg>
+  )
+}
+
+const POWERUP_ICONS: Record<PowerupKind, string> = {
+  gun: powerupGun,
+  survival: powerupSurvival,
+  casting: powerupCasting,
+  movement: powerupMovement,
+}
+
+export const POWERUP_NAMES: Record<PowerupKind, string> = {
+  gun: 'Gun',
+  survival: 'Survival',
+  casting: 'Casting',
+  movement: 'Movement',
+}
+
+/**
+ * A powerup: the game's own minimap icon for its kind (assets/map/powerup-*.svg, white
+ * silhouettes), used as a mask so it takes the powerup colour and a marker's shadow.
+ */
+export function PowerupGlyph({ kind, size = 14 }: { kind: PowerupKind; size?: number }) {
+  const mask = `url(${POWERUP_ICONS[kind]}) center / contain no-repeat`
+  // The shadow goes on a wrapper: on the masked element itself the mask would cut it off.
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-flex shrink-0"
+      style={{ filter: 'drop-shadow(0 0 1px var(--data-marker-shadow))' }}
+    >
+      <span
+        className="inline-block"
+        style={{
+          width: size,
+          height: size,
+          background: 'var(--data-powerup)',
+          mask,
+          WebkitMask: mask,
+        }}
+      />
+    </span>
+  )
+}
+
+/** A Healing Snack: a small apple, in health green. */
+export function SnackGlyph({ size = 10 }: { size?: number }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 12 12" width={size} height={size} className="shrink-0">
+      <path
+        d="M6 3.4C4.6 2.6 1.5 2.9 1.5 6.6 1.5 9.4 3.4 11 4.6 11c.6 0 .9-.3 1.4-.3s.8.3 1.4.3c1.2 0 3.1-1.6 3.1-4.4C10.5 2.9 7.4 2.6 6 3.4zM6 3.2C6 2 6.8 1 8 .9 7.9 2.1 7.2 3 6 3.2z"
+        strokeWidth={1}
+        strokeLinejoin="round"
+        style={{ fill: 'var(--data-snack)', stroke: 'var(--data-marker-shadow)' }}
       />
     </svg>
   )
@@ -231,21 +332,30 @@ export function MapTimers({
   sinners,
   crates,
   statues,
+  snacks,
+  powerups,
 }: {
   timeline: Timeline
   at: number
   /** The camps at `at`, already worked out for the map. */
   camps: CampState[]
-  /** The Sinner's Sacrifice, crate and Golden Statue spots at `at`. */
+  /** The Sinner's Sacrifice, crate, Golden Statue and Healing Snack spots at `at`. */
   sinners: BreakableSpot[]
   crates: BreakableSpot[]
   statues: BreakableSpot[]
+  snacks: BreakableSpot[]
+  /** The two powerup spots at `at`. */
+  powerups: PowerupSpot[]
 }) {
   const sinnerState = standingOf(sinners)
   const crateState = standingOf(crates)
   const statueState = standingOf(statues)
+  const snackState = standingOf(snacks)
+  const powerupState = standingOf(powerups)
+  const powerupKinds = powerups.flatMap((p) => (p.kind ? [p.kind] : []))
   const boss = midBossAt(timeline, at)
   const urn = urnAt(timeline, at)
+  const rift = riftAt(timeline, at)
   const tiers = [1, 2, 3].map((tier) => {
     const inTier = camps.filter((c) => c.tier === tier)
     const upcoming = inTier
@@ -270,12 +380,7 @@ export function MapTimers({
       className="bg-ui-surface/95 border-ui-line rounded-ui grid w-[16.5rem] max-w-full grid-cols-2 gap-x-3 border px-2 py-1 text-[0.6875rem]"
     >
       <Cell
-        icon={
-          <span
-            className="h-2.5 w-2.5 rounded-full"
-            style={{ background: 'var(--data-neutral)' }}
-          />
-        }
+        icon={<MidBossGlyph up={boss.state === 'up'} />}
         label="Mid-Boss"
         next={
           boss.state === 'down' && boss.nextSpawn !== null
@@ -306,7 +411,7 @@ export function MapTimers({
         )}
       </Cell>
 
-      <Cell icon={<UrnGlyph size={12} />} label="Urn" next={urnNext}>
+      <Cell icon={<span className="-my-0.5 flex"><UrnGlyph size={16} /></span>} label="Urn" next={urnNext}>
         {urn.state === 'waiting' ? (
           <span className="text-ui-muted">{urn.nextSpawn === null ? 'None' : 'Soon'}</span>
         ) : urn.state === 'onMap' ? (
@@ -321,6 +426,33 @@ export function MapTimers({
             <span className="text-ui-muted">Delivered</span>
             <Who timeline={timeline} player={urn.player} />
           </>
+        )}
+      </Cell>
+
+      <Cell
+        icon={<RiftGlyph faded={rift.state !== 'open'} />}
+        label={`Unstable Rift — taken ${rift.taken.get(AMBER) ?? 0} ${TEAM_SHORT_NAMES[AMBER]}, ${rift.taken.get(SAPPHIRE) ?? 0} ${TEAM_SHORT_NAMES[SAPPHIRE]}`}
+        next={
+          rift.state === 'announced'
+            ? countdown(timeline, at, rift.opensAt)
+            : (rift.state === 'none' || rift.state === 'over') && rift.next !== null
+              ? countdown(timeline, at, rift.next)
+              : undefined
+        }
+      >
+        {rift.state === 'none' ? (
+          <span className="text-ui-muted">{rift.next === null ? 'None' : 'Soon'}</span>
+        ) : rift.state === 'announced' ? (
+          <span className="text-ui-muted capitalize">{side(rift.x)} soon</span>
+        ) : rift.state === 'open' ? (
+          <span className="capitalize">
+            {side(rift.x)}
+            {rift.contested && <span className="text-ui-muted"> · taking</span>}
+          </span>
+        ) : rift.outcome === 'captured' ? (
+          <Team team={rift.team} />
+        ) : (
+          <span className="text-ui-muted">Spilled</span>
         )}
       </Cell>
 
@@ -361,6 +493,36 @@ export function MapTimers({
           next={statueState.next !== null ? countdown(timeline, at, statueState.next) : undefined}
         >
           <Count up={statueState.up} total={statueState.total} />
+        </Cell>
+      )}
+      {powerupState.total > 0 && (
+        <Cell
+          icon={<PowerupGlyph kind={powerupKinds[0] ?? 'gun'} size={12} />}
+          label={
+            powerupKinds.length
+              ? `Powerups: ${powerupKinds.map((k) => POWERUP_NAMES[k]).join(', ')}`
+              : 'Powerups'
+          }
+          next={powerupState.next !== null ? countdown(timeline, at, powerupState.next) : undefined}
+        >
+          {powerupKinds.length ? (
+            <span className="flex items-center gap-0.5">
+              {powerupKinds.map((k, i) => (
+                <PowerupGlyph key={i} kind={k} size={11} />
+              ))}
+            </span>
+          ) : (
+            <span className="text-ui-muted">Taken</span>
+          )}
+        </Cell>
+      )}
+      {snackState.total > 0 && (
+        <Cell
+          icon={<SnackGlyph size={10} />}
+          label="Healing snacks"
+          next={snackState.next !== null ? countdown(timeline, at, snackState.next) : undefined}
+        >
+          <Count up={snackState.up} total={snackState.total} />
         </Cell>
       )}
     </section>

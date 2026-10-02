@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { DemoDrop } from './components/DemoDrop'
-import { MapView } from './components/MapView'
+import { FightLog } from './components/FightLog'
+import { LiveStats } from './components/LiveStats'
+import { MapView, type MapFocus } from './components/MapView'
 import { PerformanceChart } from './components/PerformanceChart'
 import { PlaybackBar } from './components/PlaybackBar'
 import { PlayerInspector } from './components/PlayerInspector'
@@ -15,6 +17,17 @@ const SHELL = 'mx-auto w-full max-w-7xl px-4 sm:px-6'
 
 /** Seconds the arrow keys step the playhead by. */
 const ARROW_SECONDS = 5
+
+/** Where the live stats panel's open or closed state is remembered, per browser. */
+const STATS_KEY = 'replaylab.liveStats'
+
+function storedStatsOpen() {
+  try {
+    return localStorage.getItem(STATS_KEY) !== 'closed'
+  } catch {
+    return true
+  }
+}
 
 /*
  * A replay viewer. A match comes from a .dem file the viewer opens, parsed in the
@@ -92,8 +105,20 @@ function ReplayView({
   // The player open in the panel, as an index into `timeline.players`.
   const [selected, setSelected] = useState<number | null>(null)
   const [boardOpen, setBoardOpen] = useState(false)
+  // Where the fight log last asked the map to look.
+  const [focus, setFocus] = useState<MapFocus | null>(null)
   // What the stage shows: the match on the map, or its numbers over time.
   const [view, setView] = useState<'map' | 'performance'>('map')
+  // The live stats beside the map: open unless this browser closed it last time.
+  const [statsOpen, setStatsOpenState] = useState(storedStatsOpen)
+  const setStatsOpen = (open: boolean) => {
+    setStatsOpenState(open)
+    try {
+      localStorage.setItem(STATS_KEY, open ? 'open' : 'closed')
+    } catch {
+      // Remembering is a convenience; the panel still works without it.
+    }
+  }
   // Nobody is inspected in a newly opened match. Reset during render, the way
   // usePlayback resets its playhead, so the old index never reaches the new match.
   const [selectedIn, setSelectedIn] = useState(timeline)
@@ -101,6 +126,7 @@ function ReplayView({
     setSelectedIn(timeline)
     setSelected(null)
     setBoardOpen(false)
+    setFocus(null)
   }
 
   const { toggle, seek, frame, count } = playback
@@ -130,6 +156,12 @@ function ReplayView({
   const rows = playback.rows
   if (!rows) return null
   const row = selected === null ? undefined : rows[selected]
+  const showStats = view === 'map' && statsOpen
+  // With a panel on only one side, an empty column as wide on the other keeps the map
+  // centred. It gives its width up first when the stage is too narrow for both.
+  const spacer = view === 'map' && Boolean(row) !== showStats && (
+    <div aria-hidden className="hidden min-w-0 shrink lg:block lg:w-[23rem]" />
+  )
 
   return (
     <div className="flex min-h-screen flex-col lg:h-dvh lg:min-h-0">
@@ -163,6 +195,15 @@ function ReplayView({
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {view === 'map' && !statsOpen && (
+            <button
+              type="button"
+              onClick={() => setStatsOpen(true)}
+              className="ui-button px-2.5 py-1 text-[0.8125rem]"
+            >
+              Live stats
+            </button>
+          )}
           <span className="text-ui-faint hidden truncate text-[0.8125rem] sm:inline">
             {fileName}
           </span>
@@ -212,6 +253,7 @@ function ReplayView({
             />
           </aside>
         )}
+        {showStats && spacer}
 
         {/*
           The map is a square as large as fits; the performance chart is a plot, and takes
@@ -222,8 +264,12 @@ function ReplayView({
             view === 'performance'
               ? 'min-h-0 min-w-0 lg:flex-1'
               : row
-                ? 'shrink-0 lg:w-[min(100cqh,calc(100cqw-24.5rem))]'
-                : 'shrink-0 lg:w-[min(100cqw,100cqh)]'
+                ? showStats
+                  ? 'shrink-0 lg:w-[min(100cqh,calc(100cqw-48rem))]'
+                  : 'shrink-0 lg:w-[min(100cqh,calc(100cqw-24.5rem))]'
+                : showStats
+                  ? 'shrink-0 lg:w-[min(100cqh,calc(100cqw-24.5rem))]'
+                  : 'shrink-0 lg:w-[min(100cqw,100cqh)]'
           }`}
         >
           {view === 'map' ? (
@@ -234,6 +280,7 @@ function ReplayView({
               selected={selected}
               onSelect={setSelected}
               playing={playback.playing}
+              focus={focus}
               transport={
                 <PlaybackBar
                   timeline={timeline}
@@ -286,6 +333,32 @@ function ReplayView({
             </div>
           )}
         </div>
+        {row && spacer}
+
+        {/* Rates at the playhead, on the map's other side from the player panel: read
+            beside the match as it plays, not over it. */}
+        {showStats && (
+          <aside
+            aria-label="Live stats"
+            className="flex min-h-0 shrink-0 flex-col gap-3 lg:max-h-full lg:w-[23rem]"
+          >
+            <LiveStats
+              timeline={timeline}
+              at={playback.seconds}
+              selected={selected}
+              onSelect={setSelected}
+              onClose={() => setStatsOpen(false)}
+            />
+            <div className="flex min-h-[12rem] flex-1 flex-col">
+              <FightLog
+                timeline={timeline}
+                at={playback.seconds}
+                onSeek={playback.seek}
+                onFocus={setFocus}
+              />
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   )
