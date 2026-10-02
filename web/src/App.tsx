@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { TimingsView } from './components/TimingsView'
 import { DemoDrop } from './components/DemoDrop'
 import { FightLog } from './components/FightLog'
 import { LiveStats } from './components/LiveStats'
+import { MapFlow } from './components/MapFlow'
 import { MapView, type MapFocus } from './components/MapView'
 import { PerformanceChart } from './components/PerformanceChart'
 import { PlaybackBar } from './components/PlaybackBar'
@@ -37,10 +39,21 @@ function storedStatsOpen() {
 export default function App() {
   const demo = useDemo()
   const timeline = demo.state.phase === 'ready' ? demo.state.timeline : null
+  // The map timings page needs no replay; #timings opens it, so it can be linked to.
+  const [timings, setTimingsState] = useState(() => window.location.hash === '#timings')
+  const setTimings = (open: boolean) => {
+    setTimingsState(open)
+    const url = open ? '#timings' : window.location.pathname + window.location.search
+    window.history.replaceState(null, '', url)
+  }
 
   const brand = (
     <span className="text-ui-fg text-[0.9375rem] leading-none font-semibold">Deadlock ReplayLab</span>
   )
+
+  if (timings && !timeline) {
+    return <TimingsView brand={brand} onClose={() => setTimings(false)} />
+  }
 
   if (timeline && demo.state.phase === 'ready') {
     return (
@@ -60,6 +73,19 @@ export default function App() {
       </header>
       <main className={`${SHELL} pt-6 pb-24`}>
         <DemoDrop state={demo.state} onFile={demo.parse} />
+        <div className="border-ui-line rounded-ui mt-6 flex flex-wrap items-center justify-between gap-3 border px-4 py-3">
+          <p className="text-ui-muted text-[0.8125rem]">
+            No replay to hand? Watch the map run on its own clock: camps, powerups, the Urn and
+            the rest, minute by minute.
+          </p>
+          <button
+            type="button"
+            onClick={() => setTimings(true)}
+            className="ui-button px-3 py-1.5 text-[0.8125rem]"
+          >
+            Explore map timings
+          </button>
+        </div>
       </main>
       <footer className={`${SHELL} text-ui-faint pb-8 text-[0.75rem]`}>
         A fan project, not affiliated with or endorsed by Valve. Deadlock and its hero,
@@ -107,8 +133,9 @@ function ReplayView({
   const [boardOpen, setBoardOpen] = useState(false)
   // Where the fight log last asked the map to look.
   const [focus, setFocus] = useState<MapFocus | null>(null)
-  // What the stage shows: the match on the map, or its numbers over time.
-  const [view, setView] = useState<'map' | 'performance'>('map')
+  // What the stage shows: the match on the map, the map on its own, or the numbers
+  // over time.
+  const [view, setView] = useState<'map' | 'flow' | 'performance'>('map')
   // The live stats beside the map: open unless this browser closed it last time.
   const [statsOpen, setStatsOpenState] = useState(storedStatsOpen)
   const setStatsOpen = (open: boolean) => {
@@ -155,11 +182,14 @@ function ReplayView({
 
   const rows = playback.rows
   if (!rows) return null
-  const row = selected === null ? undefined : rows[selected]
+  // The map flow is the map without players, so nobody is inspected there.
+  const row = selected === null || view === 'flow' ? undefined : rows[selected]
   const showStats = view === 'map' && statsOpen
+  // The side panel beside the map: live stats on the match view, the map flow on its own.
+  const showSide = showStats || view === 'flow'
   // With a panel on only one side, an empty column as wide on the other keeps the map
   // centred. It gives its width up first when the stage is too narrow for both.
-  const spacer = view === 'map' && Boolean(row) !== showStats && (
+  const spacer = view !== 'performance' && Boolean(row) !== showSide && (
     <div aria-hidden className="hidden min-w-0 shrink lg:block lg:w-[23rem]" />
   )
 
@@ -174,6 +204,7 @@ function ReplayView({
             {(
               [
                 ['map', 'Map'],
+                ['flow', 'Map flow'],
                 ['performance', 'Performance'],
               ] as const
             ).map(([id, label]) => (
@@ -253,7 +284,7 @@ function ReplayView({
             />
           </aside>
         )}
-        {showStats && spacer}
+        {showSide && spacer}
 
         {/*
           The map is a square as large as fits; the performance chart is a plot, and takes
@@ -264,17 +295,18 @@ function ReplayView({
             view === 'performance'
               ? 'min-h-0 min-w-0 lg:flex-1'
               : row
-                ? showStats
+                ? showSide
                   ? 'shrink-0 lg:w-[min(100cqh,calc(100cqw-48rem))]'
                   : 'shrink-0 lg:w-[min(100cqh,calc(100cqw-24.5rem))]'
-                : showStats
+                : showSide
                   ? 'shrink-0 lg:w-[min(100cqh,calc(100cqw-24.5rem))]'
                   : 'shrink-0 lg:w-[min(100cqw,100cqh)]'
           }`}
         >
-          {view === 'map' ? (
+          {view !== 'performance' ? (
             <MapView
               timeline={timeline}
+              players={view === 'map'}
               at={playback.seconds}
               speed={playback.speed}
               selected={selected}
@@ -337,6 +369,11 @@ function ReplayView({
 
         {/* Rates at the playhead, on the map's other side from the player panel: read
             beside the match as it plays, not over it. */}
+        {view === 'flow' && (
+          <aside aria-label="Map flow" className="flex min-h-0 shrink-0 flex-col lg:max-h-full lg:w-[23rem]">
+            <MapFlow timeline={timeline} at={playback.seconds} onSeek={playback.seek} />
+          </aside>
+        )}
         {showStats && (
           <aside
             aria-label="Live stats"

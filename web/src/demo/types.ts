@@ -277,7 +277,9 @@ export type Neutrals = {
   tier: number[]
 }
 
-export type PowerupKind = 'gun' | 'survival' | 'casting' | 'movement'
+/** Which powerup -- or, on the map timings page, `random`: any of the four, drawn with
+ * the game's generic powerup icon. */
+export type PowerupKind = 'gun' | 'survival' | 'casting' | 'movement' | 'random'
 
 export type Powerups = Breakables & { kind: PowerupKind[] }
 
@@ -371,6 +373,13 @@ export type Events = {
   sinners: Breakables
   /** Golden Statues: breakable props like crates, on the same loop. */
   statues: Breakables
+  /** Tough crates, which only a heavy melee breaks (from the 2026-10 update). */
+  toughCrates: Breakables
+  /** The Bell Tower's three bells (from the 2026-10 update). */
+  bells: Breakables
+  /** Each Broker shipment: when, in ticks, and the Corrupted Items a player may hold
+   * from then. Empty before the 2026-10 update. */
+  broker: { t: number[]; limit: number[] }
   /**
    * Healing Snacks (from the 2026-10 update): one life from when a snack is there to
    * eat to when it was eaten, `by` the nearest hero then. Empty for older matches.

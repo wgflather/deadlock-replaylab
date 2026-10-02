@@ -475,6 +475,16 @@ const K_SUBCLASS: u64 = fkey_from_path(&["m_nSubclassID"]);
 /// `citadel_breakable_item_container`, hashed: a Golden Statue. Any other breakable
 /// prop -- `citadel_breakable_prop_wooden_crate` on every match seen -- is a crate.
 const SUBCLASS_STATUE: u64 = 3_719_077_267;
+/// `citadel_breakable_prop_tough_crate` (from the 2026-10 update): only a heavy melee
+/// breaks one, and it pays more than a crate. 73 on the map.
+const SUBCLASS_TOUGH_CRATE: u64 = 202_631_964;
+/// `citadel_breakable_bell_chinatown` (from the 2026-10 update): the three bells round the
+/// Sinner's Sacrifice on the Chinatown tower; ringing one alerts every enemy nearby.
+const SUBCLASS_BELL: u64 = 1_755_924_652;
+/// The Broker (from the 2026-10 update): how many Corrupted Items a player may hold,
+/// which goes up by one with each shipment -- first about 30:00, then roughly every
+/// 15:00. The stalls themselves are not networked.
+const K_BROKER_LIMIT: u64 = fkey_from_path(&["m_pGameRules", "m_nNumCorruptedItemsLimit"]);
 
 /// The game rules, where the match clock lives.
 const GAME_RULES: u64 = haste::fxhash::hash_bytes(b"CCitadelGameRulesProxy");
@@ -926,6 +936,13 @@ struct Breakables {
     by: Vec<i32>,
 }
 
+/// The Broker's shipments, in order.
+#[derive(Default, Serialize)]
+struct Broker {
+    t: Vec<i32>,
+    limit: Vec<i32>,
+}
+
 /// Every Unstable Rift in the match, one entry each, in order.
 #[derive(Default, Serialize)]
 struct Rifts {
@@ -960,6 +977,8 @@ enum Breakable {
     Crate,
     Statue,
     Sinner,
+    ToughCrate,
+    Bell,
 }
 
 /// Moments rather than state: see the module note on events.
@@ -993,6 +1012,14 @@ struct Events {
     crates: Breakables,
     sinners: Breakables,
     statues: Breakables,
+    /// Tough crates, which only a heavy melee breaks, and the Bell Tower's bells (both
+    /// from the 2026-10 update): credited like crates.
+    #[serde(rename = "toughCrates")]
+    tough_crates: Breakables,
+    bells: Breakables,
+    /// Each Broker shipment (from the 2026-10 update): when, in ticks, and how many
+    /// Corrupted Items a player may hold from then. See [`K_BROKER_LIMIT`].
+    broker: Broker,
     /// Healing Snacks (from the 2026-10 update): a life runs from when one is there to
     /// eat to when it was eaten, `by` the nearest hero then. See [`PICKUP_HEALTH`].
     snacks: Breakables,
@@ -1263,6 +1290,8 @@ impl Events {
         match kind {
             Breakable::Crate => &mut self.crates,
             Breakable::Statue => &mut self.statues,
+            Breakable::ToughCrate => &mut self.tough_crates,
+            Breakable::Bell => &mut self.bells,
             Breakable::Sinner => &mut self.sinners,
         }
     }
@@ -1778,10 +1807,13 @@ impl Visitor for Collector {
             if d == DeltaHeader::CREATE {
                 let kind = if e.serializer_name_heq(SINNER) {
                     Breakable::Sinner
-                } else if e.get_value::<u64>(&K_SUBCLASS) == Some(SUBCLASS_STATUE) {
-                    Breakable::Statue
                 } else {
-                    Breakable::Crate
+                    match e.get_value::<u64>(&K_SUBCLASS) {
+                        Some(SUBCLASS_STATUE) => Breakable::Statue,
+                        Some(SUBCLASS_TOUGH_CRATE) => Breakable::ToughCrate,
+                        Some(SUBCLASS_BELL) => Breakable::Bell,
+                        _ => Breakable::Crate,
+                    }
                 };
                 self.on_breakable_spawn(ctx, e, kind);
             }
@@ -1795,6 +1827,13 @@ impl Visitor for Collector {
             st.on_clock(ctx.tick(), e);
             st.on_rift(ctx.tick(), e);
             st.on_camp_sites(e);
+            if let Some(limit) = e.get_value::<i64>(&K_BROKER_LIMIT) {
+                let broker = &mut st.events.broker;
+                if limit > broker.limit.last().copied().unwrap_or(0) as i64 {
+                    broker.t.push(ctx.tick());
+                    broker.limit.push(limit as i32);
+                }
+            }
             return Ok(());
         }
         if e.serializer_name_heq(RIFT_SPAWNER) {
@@ -2966,6 +3005,9 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         .chain(events.crates.t.iter_mut())
         .chain(events.sinners.t.iter_mut())
         .chain(events.statues.t.iter_mut())
+        .chain(events.tough_crates.t.iter_mut())
+        .chain(events.bells.t.iter_mut())
+        .chain(events.broker.t.iter_mut())
         .chain(events.snacks.t.iter_mut())
         .chain(events.powerups.lives.t.iter_mut())
     {
@@ -2978,6 +3020,8 @@ pub fn parse_scoreboard(len: f64, read_chunk: js_sys::Function) -> Result<String
         .iter_mut()
         .chain(events.sinners.broken.iter_mut())
         .chain(events.statues.broken.iter_mut())
+        .chain(events.tough_crates.broken.iter_mut())
+        .chain(events.bells.broken.iter_mut())
         .chain(events.snacks.broken.iter_mut())
         .chain(events.powerups.lives.broken.iter_mut())
         .chain(rifts.t.iter_mut())

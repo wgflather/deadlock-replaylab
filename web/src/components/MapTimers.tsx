@@ -15,6 +15,9 @@ import powerupGun from '../assets/map/powerup-gun.svg'
 import powerupSurvival from '../assets/map/powerup-survival.svg'
 import powerupCasting from '../assets/map/powerup-casting.svg'
 import powerupMovement from '../assets/map/powerup-movement.svg'
+// The game's own generic powerup icon (hud/modifiers/icon_powerup), which every kind's
+// buff uses: for a powerup whose kind is not known, on the map timings page.
+import powerupAny from '../assets/map/powerup-any.svg'
 import dropoffEnemy from '../assets/map/urn-dropoff-enemy.webp'
 import dropoffTeam from '../assets/map/urn-dropoff-team.webp'
 import urnPickup from '../assets/map/urn-pickup.webp'
@@ -152,8 +155,9 @@ export function SinnerGlyph({ up, size = 12 }: { up: boolean; size?: number }) {
   )
 }
 
-/** A crate: a small square, only ever drawn while it stands. */
-export function CrateGlyph({ size = 6 }: { size?: number }) {
+/** A crate: a small square, only ever drawn while it stands. A tough crate, which only
+ * a heavy melee breaks, is the same square crossed by its bands. */
+export function CrateGlyph({ size = 6, tough = false }: { size?: number; tough?: boolean }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 10 10" width={size} height={size} className="shrink-0">
       <rect
@@ -165,6 +169,9 @@ export function CrateGlyph({ size = 6 }: { size?: number }) {
         strokeWidth={1.5}
         style={{ fill: 'var(--data-crate)', stroke: 'var(--data-marker-shadow)' }}
       />
+      {tough && (
+        <path d="M2 2L8 8M8 2L2 8" strokeWidth={1.5} style={{ stroke: 'var(--data-marker-shadow)' }} />
+      )}
     </svg>
   )
 }
@@ -217,6 +224,7 @@ const POWERUP_ICONS: Record<PowerupKind, string> = {
   survival: powerupSurvival,
   casting: powerupCasting,
   movement: powerupMovement,
+  random: powerupAny,
 }
 
 export const POWERUP_NAMES: Record<PowerupKind, string> = {
@@ -224,6 +232,7 @@ export const POWERUP_NAMES: Record<PowerupKind, string> = {
   survival: 'Survival',
   casting: 'Casting',
   movement: 'Movement',
+  random: 'Any',
 }
 
 /**
@@ -334,6 +343,7 @@ export function MapTimers({
   statues,
   snacks,
   powerups,
+  toughCrates = [],
 }: {
   timeline: Timeline
   at: number
@@ -346,11 +356,14 @@ export function MapTimers({
   snacks: BreakableSpot[]
   /** The two powerup spots at `at`. */
   powerups: PowerupSpot[]
+  /** Tough crate spots at `at` (from the 2026-10 update). */
+  toughCrates?: BreakableSpot[]
 }) {
   const sinnerState = standingOf(sinners)
   const crateState = standingOf(crates)
   const statueState = standingOf(statues)
   const snackState = standingOf(snacks)
+  const toughState = standingOf(toughCrates)
   const powerupState = standingOf(powerups)
   const powerupKinds = powerups.flatMap((p) => (p.kind ? [p.kind] : []))
   const boss = midBossAt(timeline, at)
@@ -484,6 +497,15 @@ export function MapTimers({
           next={crateState.next !== null ? countdown(timeline, at, crateState.next) : undefined}
         >
           <Count up={crateState.up} total={crateState.total} />
+        </Cell>
+      )}
+      {toughState.total > 0 && (
+        <Cell
+          icon={<CrateGlyph size={9} tough />}
+          label="Tough crates"
+          next={toughState.next !== null ? countdown(timeline, at, toughState.next) : undefined}
+        >
+          <Count up={toughState.up} total={toughState.total} />
         </Cell>
       )}
       {statueState.total > 0 && (

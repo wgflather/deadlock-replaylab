@@ -82,6 +82,13 @@ const MAP_LAYERS: [MapLayer, string][] = [
  * on the map the passages run, not so much that it reads as the streets themselves. */
 const STREETS_UNDER = 0.18
 
+/** A breakable list with nothing in it, for matches from before tough crates. */
+const EMPTY = { t: [], x: [], y: [], broken: [], by: [] }
+
+/** How a taken spot is drawn when `ghosts` keeps it on the map: greyed and faint, the
+ * way a camp that is down is hollow -- still there to see where it comes back. */
+const GHOST = { filter: 'grayscale(1)', opacity: 0.55 } as const
+
 /** The neutral team: whose the underground shops are. */
 const NEUTRAL_TEAM = 4
 
@@ -188,6 +195,10 @@ function inBounds(centre: { x: number; y: number }, zoom: number) {
  * and the transport along the bottom, which fades out while the match plays and comes
  * back when the pointer moves. Anything marked `data-map-chrome` is a control, not map:
  * pressing or scrolling on it neither pans nor zooms.
+ *
+ * With `players` off, it is the map on its own: no heroes and none of their moments --
+ * deaths, casts, shots, the kill feed -- only the timers, structures, camps and troopers,
+ * for watching how the map itself runs over a match.
  */
 export function MapView({
   timeline,
@@ -198,6 +209,8 @@ export function MapView({
   playing,
   transport,
   focus = null,
+  players = true,
+  ghosts = false,
 }: {
   timeline: Timeline
   at: number
@@ -212,6 +225,12 @@ export function MapView({
   transport: ReactNode
   /** Where to take the camera, as of the latest request; see `MapFocus`. */
   focus?: MapFocus | null
+  /** Whether heroes and their moments are drawn; see above. */
+  players?: boolean
+  /** Whether a crate, statue, snack or powerup that is taken (or not up yet) stays on
+   * the map, greyed, rather than disappearing -- for the map timings page, where the
+   * spots are the point. */
+  ghosts?: boolean
 }) {
   const [zoom, setZoom] = useState(1)
   // Where the view sits when nobody is being followed.
@@ -276,7 +295,7 @@ export function MapView({
     return () => observer.disconnect()
   }, [])
 
-  const spots = spotsAt(timeline, at)
+  const spots = players ? spotsAt(timeline, at) : []
   // The backgrounds this match's map has: rooms under the middle on both maps, tunnels
   // only on the current one. A place without one is drawn on the streets.
   const belowArt = belowGroundFor(timeline.build)
@@ -295,12 +314,13 @@ export function MapView({
   // One icon per Base Guardian pair, as the game's minimap draws them.
   const objectives = pairBaseGuardians(objectivesAt(timeline, at))
   const lanes = lanesAt(timeline, at)
-  const kills = showDeaths ? killsAt(timeline, at, lingerFor(DEATH_LINGER, speed)) : []
-  const casts = showCasts ? castsAt(timeline, at, lingerFor(CAST_LINGER, speed)) : []
-  const feed = showDeaths
-    ? killFeed(timeline, at, lingerFor(KILL_FEED_LINGER, speed), KILL_FEED_MAX)
-    : []
-  const firing = showShots ? firingAt(timeline, at, lingerFor(FIRE_TAIL, speed)) : []
+  const kills = players && showDeaths ? killsAt(timeline, at, lingerFor(DEATH_LINGER, speed)) : []
+  const casts = players && showCasts ? castsAt(timeline, at, lingerFor(CAST_LINGER, speed)) : []
+  const feed =
+    players && showDeaths
+      ? killFeed(timeline, at, lingerFor(KILL_FEED_LINGER, speed), KILL_FEED_MAX)
+      : []
+  const firing = players && showShots ? firingAt(timeline, at, lingerFor(FIRE_TAIL, speed)) : []
   // Each camp's whole history is worked out once per match; its state at the playhead is
   // then a lookup.
   const histories = useMemo(() => campHistories(timeline), [timeline])
@@ -311,6 +331,8 @@ export function MapView({
   const sinnerSpots = useMemo(() => breakableSpots(timeline.events.sinners), [timeline])
   const { hz, quant } = timeline.events
   const crates = breakablesAt(timeline.events.crates, crateSpots, hz, quant, at)
+  const toughSpots = useMemo(() => breakableSpots(timeline.events.toughCrates ?? EMPTY), [timeline])
+  const toughCrates = breakablesAt(timeline.events.toughCrates ?? EMPTY, toughSpots, hz, quant, at)
   const showCrates = shown(crateDetail, zoom)
   const showStatues = shown(statueDetail, zoom)
   const statueSpots = useMemo(() => breakableSpots(timeline.events.statues), [timeline])
@@ -533,7 +555,7 @@ export function MapView({
               first, as the smallest and least of the landmarks. */}
         {showCrates &&
           crates.map((crate) => {
-            if (!crate.standing) return null
+            if (!crate.standing && !ghosts) return null
             const { left, top } = worldToMap(crate.x, crate.y)
             return (
               <div
@@ -543,16 +565,36 @@ export function MapView({
                   left: `${left * 100}%`,
                   top: `${top * 100}%`,
                   transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                  ...(crate.standing ? null : GHOST),
                 }}
               >
                 <CrateGlyph size={6} />
               </div>
             )
           })}
+        {showCrates &&
+          toughCrates.map((crate) => {
+            if (!crate.standing && !ghosts) return null
+            const { left, top } = worldToMap(crate.x, crate.y)
+            return (
+              <div
+                key={`tough-${crate.id}`}
+                className="pointer-events-none absolute"
+                style={{
+                  left: `${left * 100}%`,
+                  top: `${top * 100}%`,
+                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                  ...(crate.standing ? null : GHOST),
+                }}
+              >
+                <CrateGlyph size={8} tough />
+              </div>
+            )
+          })}
         {/* Standing Golden Statues, like crates: a broken one is not marked. */}
         {showStatues &&
           statues.map((statue) => {
-          if (!statue.standing) return null
+          if (!statue.standing && !ghosts) return null
           const { left, top } = worldToMap(statue.x, statue.y)
           return (
             <div
@@ -563,6 +605,7 @@ export function MapView({
                 left: `${left * 100}%`,
                 top: `${top * 100}%`,
                 transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                ...(statue.standing ? null : GHOST),
               }}
             >
               <StatueGlyph size={12} />
@@ -601,27 +644,29 @@ export function MapView({
         {/* Powerups there to take, each as the game's icon for its kind. */}
         {showPowerups &&
           powerups.map((powerup) => {
-            if (!powerup.kind) return null
+            if (!powerup.kind && !ghosts) return null
+            const kind = powerup.kind ?? 'random'
             const { left, top } = worldToMap(powerup.x, powerup.y)
             return (
               <div
                 key={`powerup-${powerup.id}`}
                 className="pointer-events-none absolute"
-                title={`${POWERUP_NAMES[powerup.kind]} powerup`}
+                title={powerup.kind ? `${POWERUP_NAMES[kind]} powerup` : 'Powerup spot'}
                 style={{
                   left: `${left * 100}%`,
                   top: `${top * 100}%`,
                   transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                  ...(powerup.kind ? null : GHOST),
                 }}
               >
-                <PowerupGlyph kind={powerup.kind} size={16} />
+                <PowerupGlyph kind={kind} size={16} />
               </div>
             )
           })}
         {/* Healing Snacks there to eat; an eaten one is not marked, like a crate. */}
         {showSnacks &&
           snacks.map((snack) => {
-            if (!snack.standing) return null
+            if (!snack.standing && !ghosts) return null
             const { left, top } = worldToMap(snack.x, snack.y)
             return (
               <div
@@ -632,6 +677,7 @@ export function MapView({
                   left: `${left * 100}%`,
                   top: `${top * 100}%`,
                   transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                  ...(snack.standing ? null : GHOST),
                 }}
               >
                 <SnackGlyph size={10} />
@@ -992,9 +1038,13 @@ export function MapView({
           <ToggleGroup label="Show on map">
             {(
               [
-                ['Deaths', showDeaths, setShowDeaths],
-                ['Casts', showCasts, setShowCasts],
-                ['Shots', showShots, setShowShots],
+                ...(players
+                  ? ([
+                      ['Deaths', showDeaths, setShowDeaths],
+                      ['Casts', showCasts, setShowCasts],
+                      ['Shots', showShots, setShowShots],
+                    ] as const)
+                  : []),
                 ['Camps', showCamps, setShowCamps],
                 ['Powerups', showPowerups, setShowPowerups],
                 ['Timers', showTimers, setShowTimers],
@@ -1064,6 +1114,7 @@ export function MapView({
             statues={statues}
             snacks={snacks}
             powerups={powerups}
+            toughCrates={toughCrates}
           />
         )}
       </div>
