@@ -1,4 +1,4 @@
-import { incomeAt, RECENT_SECONDS, SOURCE_COLOURS, SOURCE_LABELS } from '../demo/income'
+import { incomeAt, SOURCE_COLOURS, SOURCE_LABELS } from '../demo/income'
 import type { Timeline } from '../demo/types'
 import { gameClock } from '../demo/usePlayback'
 import { compact } from '../stats/format'
@@ -55,9 +55,6 @@ export function SoulsTab({
           <tr className="text-ui-muted text-left">
             <th className="fact-label pb-1 font-normal">Source</th>
             <th className="fact-label pb-1 text-right font-normal">So far</th>
-            <th className="fact-label pb-1 text-right font-normal">
-              Last {RECENT_SECONDS / 60} min
-            </th>
           </tr>
         </thead>
         <tbody>
@@ -83,9 +80,6 @@ export function SoulsTab({
                 </span>
               </td>
               <td className="text-ui-fg py-0.5 text-right tabular-nums">{compact(share.total)}</td>
-              <td className="text-ui-muted py-0.5 text-right tabular-nums">
-                {share.recent > 0 ? `+${compact(share.recent)}` : '–'}
-              </td>
             </tr>
           ))}
         </tbody>
